@@ -1,6 +1,6 @@
 # flair
 
-This is a Rust implement OSS of FLAIR by Takato Honda.
+This is a Rust implement OSS of time series forecasting method FLAIR by Takato Honda.
 
 ## lisence
 
@@ -21,66 +21,87 @@ Author: Andyou <andyou@animagram.jp>
 
 Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 
-| example | binary size | peak RSS | wall time |
-|---|---|---|---|
-| japan_demand_forecast (70,128 obs → 24 h) | 687 KB | 9.7 MB | 0.02 s |
-| world_bank_forecast (34 obs → 3 y) | 688 KB | 2.9 MB | < 0.01 s |
+| dataset | obs | binary size | peak RSS | wall time |
+|---|---|---|---|---|
+| japan_demand (hourly) | 70,128 | 687 KB | 9.7 MB | 0.02 s |
+| world_bank (annual) | 34 | 688 KB | 2.9 MB | < 0.01 s |
 
 ## test
 
+Run all checks: `cargo run --example integration_tests`
+
 ### verify
 
-`verify()` runs a self-contained judge on 4 internal checks (no I/O, no external data):
+`verify()` — self-contained implementation check, no external data.
 
-| check | description |
+| check | criterion |
 |---|---|
-| seasonal signal | 5-year hourly sine wave → cycle mean ≈ 10.0 |
-| constant series | flat input → forecast mean ≈ input value |
-| Box-Cox round-trip | `bc_inv(bc(y, λ), λ) ≈ y` for λ ∈ {0, 0.5, 1} |
+| seasonal signal | 5-year hourly sine wave, cycle mean ≈ 10.0 (tolerance ±3) |
+| constant series | flat input → forecast mean ≈ input value (tolerance ±2) |
+| Box-Cox round-trip | `bc_inv(bc(y, λ), λ) ≈ y` for λ ∈ {0, 0.5, 1}, tol 1e-9 |
 | Ridge SA in-sample | perfect linear data → RMSE < 0.1 |
 
 ```
-$ cargo run --example verify
-verify: OK — all checks passed
+=== verify ===
+  [OK] seasonal / constant / box-cox / ridge
+```
+
+### confidence
+
+`confidence(y, freq)` — self-evaluation from input only, no forecast needed.
+
+| field | description |
+|---|---|
+| `rank1` | `s[0]²/Σs²` of seasonal matrix. 1.0 = pure rank-1 seasonality. `n/a` when period=1 (e.g. annual) or series too short — not an error |
+| `gamma` | seasonal strength above random-matrix baseline, [0, 1]. 1.0 = strong clean seasonality |
+| `gcv` | Ridge LOO error on Level series. lower = Level more predictable. scale depends on Box-Cox transform |
+
+**japan_demand** (hourly, strong seasonality):
+```
+  rank1 : 0.996   ← near-perfect rank-1 fit
+  gamma : 0.996   ← strong seasonal structure
+  gcv   : 0.0056  ← Level highly predictable
+```
+
+**world_bank** (annual, no intra-period structure):
+```
+  rank1 : n/a     ← period=1 by design; FLAIR runs Level-only AR
+  gamma : n/a
+  gcv   : 41186   ← Level predictability in kWh/capita units
+```
+
+### forecast
+
+**japan_demand** — Tokyo hourly electricity demand, 70,128 obs (2016-04-01 – 2024-03-31)  
+Source: [japanesepower.org](https://japanesepower.org/) — `examples/test_data/japan_electricity_demand.csv`  
+Call: `forecast_mean(&y, 24, "H", 200, None)`
+
+```
+  +01h: 20332    +07h: 24814    +13h: 30050    +19h: 32240
+  +02h: 19719    +08h: 27341    +14h: 30521    +20h: 31671
+  +03h: 19795    +09h: 29881    +15h: 30029    +21h: 30852
+  +04h: 20101    +10h: 31234    +16h: 29950    +22h: 29438
+  +05h: 20628    +11h: 31240    +17h: 30677    +23h: 27694
+  +06h: 22014    +12h: 31080    +18h: 31624    +24h: 25882
+```
+
+**world_bank** — Japan electric power consumption (kWh per capita), 34 annual obs (1990–2022)  
+Source: [World Bank](https://data.worldbank.org/indicator/EG.USE.ELEC.KH.PC) — `examples/test_data/world_bank_electricity/`  
+Call: `forecast_mean(&y, 3, "A", 200, None)`
+
+```
+  +1y: 7669 kWh/capita
+  +2y: 7705 kWh/capita
+  +3y: 7734 kWh/capita
 ```
 
 ### determinism
 
-Same seed produces bit-identical results; different seeds diverge.  
-Input: Tokyo hourly demand (70,128 obs), `forecast_mean(..., 200, Some(seed))`
+Same seed → bit-identical output. Different seeds → different output.  
+`seed=None` → non-deterministic (seeded from system clock).
 
 ```
-$ cargo run --example determinism
-same seed (42 == 42): identical ✓
-diff seed (42 != 99): different ✓
-determinism: OK
-```
-
-### japan_demand_forecast
-
-Input: Tokyo hourly electricity demand, 70,128 observations (2016-04-01 – 2024-03-31)  
-Source: [japanesepower.org](https://japanesepower.org/) — `examples/test_data/japan_electricity_demand.csv`  
-Call: `forecast_mean(&y, 24, "H", 200, Some(42))`
-
-```
-+01h: 20422    +07h: 24987    +13h: 29896    +19h: 32194
-+02h: 19813    +08h: 27493    +14h: 30342    +20h: 31635
-+03h: 19889    +09h: 29993    +15h: 29858    +21h: 30835
-+04h: 20186    +10h: 31305    +16h: 29757    +22h: 29422
-+05h: 20724    +11h: 31245    +17h: 30523    +23h: 27676
-+06h: 22147    +12h: 31019    +18h: 31549    +24h: 25853
-```
-
-### world_bank_forecast
-
-Input: Japan electric power consumption (kWh per capita), 34 annual observations (1990–2022)  
-Source: [World Bank](https://data.worldbank.org/indicator/EG.USE.ELEC.KH.PC) — `examples/test_data/world_bank_electricity/`  
-Call: `forecast_mean(&y, 3, "A", 200, Some(42))`
-
-```
-+1y: 7684 kWh/capita
-+2y: 7709 kWh/capita
-+3y: 7763 kWh/capita
+  [OK] determinism (same seed identical; seed=None non-deterministic)
 ```
 
 ## reference
