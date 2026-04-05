@@ -722,6 +722,34 @@ pub fn forecast_mean(
 /// 4. **Ridge SA in-sample** – perfect linear data → RMSE < 0.1.
 ///
 /// Returns `Ok(())` on success, `Err(description)` on the first failed check.
+/// Returns the rank-1 explained variance ratio of the seasonal matrix built from `y`.
+///
+/// Reshapes `y` into a (period × n_complete) matrix and computes
+/// `s[0]^2 / sum(s^2)` from its singular values.  A value close to 1.0 means
+/// the series is well approximated by a rank-1 (pure seasonal) structure —
+/// i.e. the rank-1 assumption holds.  Values below ~0.5 indicate that the
+/// input has complex multi-component structure or noise dominance.
+///
+/// Returns `None` if the series is too short to form at least `MIN_COMPLETE`
+/// complete periods.
+pub fn rank1_score(y: &[f64], freq: &str) -> Option<f64> {
+    let n = y.len();
+    let (big_p, _, _, _) = select_period(y, n, freq);
+    let n_complete = n / big_p;
+    if n_complete < MIN_COMPLETE || big_p < 2 {
+        return None;
+    }
+    let usable = n_complete * big_p;
+    let y_trim = &y[n - usable..];
+    let mat = DMatrix::from_fn(big_p, n_complete, |ph, ci| y_trim[ci * big_p + ph]);
+    let s = svd_singvals(&mat);
+    let total: f64 = s.iter().map(|&v| v * v).sum();
+    if total < EPS {
+        return None;
+    }
+    Some(s[0] * s[0] / total)
+}
+
 pub fn verify() -> Result<(), String> {
     // ── 1. Seasonal signal ──────────────────────────────────────────────
     let n_h = 24 * 7 * 52 * 5; // ~5 years of hourly data
