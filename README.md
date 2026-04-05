@@ -8,10 +8,11 @@ Author: Andyou <andyou@animagram.jp>
 
 ## todo
 
-- 既存に開発者がapache-2.0 licenseで公開中の時系列解析OSSを、Rustにてメモリ合理性とポータビリティを考慮して再実装する
+- 既存に開発者本人がapache-2.0 licenseで公開中の時系列解析FLAIRを、Rustにてメモリ合理性とポータビリティを考慮して再実装する
   - Rust組み込み関数使用可。SVDも一時的に使用可
   - 入力のみを利用した、成果物の自己検証pub fnも必要。信頼性評価を出力する
   - 実体を網羅実装後、docTestとunit testを整備
+- 動作検証と静動パフォーマンスメモリ実測を行う
 
 ## reference
 
