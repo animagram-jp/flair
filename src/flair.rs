@@ -725,13 +725,19 @@ pub struct Confidence {
     /// `s[0]^2 / Σs^2` of the seasonal matrix (period × n_complete).
     /// Measures how close the data is to rank-1 structure.
     /// 1.0 = perfect single-component seasonality; ~1/P = flat/random.
-    /// `None` when the series is too short for period decomposition.
+    ///
+    /// `None` in two distinct cases:
+    /// - `freq` has no intra-period structure (`"A"` / `"Y"`, period = 1) —
+    ///   FLAIR skips seasonal decomposition and runs Level-only AR; this is
+    ///   expected and not a sign of poor fit.
+    /// - Series is too short to form `MIN_COMPLETE` complete periods —
+    ///   seasonal decomposition is unreliable regardless of freq.
     pub rank1: Option<f64>,
 
     /// Seasonal strength after removing random-matrix baseline.
     /// `(r1 - 1/min(P,N)) / (1 - 1/min(P,N))`, clamped to [0, 1].
     /// 1.0 = strong clean seasonality; 0.0 = no detectable seasonal structure.
-    /// `None` when `rank1` is `None`.
+    /// `None` in the same cases as `rank1`.
     pub gamma: Option<f64>,
 
     /// GCV-optimal LOO error from the Ridge regression on the Level series.
