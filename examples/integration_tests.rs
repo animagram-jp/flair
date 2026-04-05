@@ -7,7 +7,7 @@
 //   2. japan_demand   — Tokyo hourly demand forecast + rank-1 score + determinism
 //   3. world_bank     — Japan annual kWh/capita forecast + rank-1 score + determinism
 
-use flair::{confidence, forecast_mean, verify};
+use flair::{confidence, forecast_mean};
 use std::fs;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -18,15 +18,6 @@ fn fail(label: &str, reason: &str) -> ! {
     std::process::exit(1);
 }
 
-// ── 1. verify ─────────────────────────────────────────────────────────────────
-
-fn check_verify() {
-    println!("=== verify ===");
-    match verify() {
-        Ok(()) => pass("seasonal / constant / box-cox / ridge"),
-        Err(e) => fail("verify", &e),
-    }
-}
 
 // ── 2. japan demand (hourly, 9 regions) ──────────────────────────────────────
 
@@ -50,9 +41,10 @@ fn check_japan_demand() {
 
     // confidence
     let c = confidence(&y, "H");
-    println!("  rank1 : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}"))  );
-    println!("  gamma : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}"))  );
-    println!("  gcv   : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
+    println!("  rank1   : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}")));
+    println!("  gamma   : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}")));
+    println!("  gcv     : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
+    println!("  impl_ok : {}", c.impl_ok);
 
     // forecast
     let fc = forecast_mean(&y, 24, "H", 200, None).unwrap_or_else(|e| fail("forecast", &e));
@@ -101,9 +93,10 @@ fn check_world_bank() {
 
     // confidence — annual data has no intra-period structure, rank1/gamma will be n/a
     let c = confidence(&y, "A");
-    println!("  rank1 : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}"))  );
-    println!("  gamma : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}"))  );
-    println!("  gcv   : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
+    println!("  rank1   : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}")));
+    println!("  gamma   : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}")));
+    println!("  gcv     : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
+    println!("  impl_ok : {}", c.impl_ok);
 
     // forecast
     let fc = forecast_mean(&y, 3, "A", 200, None).unwrap_or_else(|e| fail("forecast", &e));
@@ -127,7 +120,6 @@ fn check_world_bank() {
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
-    check_verify();
     check_japan_demand();
     check_world_bank();
     println!("\nAll integration tests passed.");

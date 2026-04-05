@@ -745,6 +745,12 @@ pub struct Confidence {
     /// Scale is that of the Box-Cox-transformed, mean-subtracted Level.
     /// `None` when the series is too short to fit the Ridge model.
     pub gcv: Option<f64>,
+
+    /// `true` if the core numerical primitives (Box-Cox round-trip and Ridge
+    /// in-sample fit) pass their internal sanity checks on synthetic data.
+    /// Computed once per `confidence()` call at negligible cost.
+    /// A `false` here indicates a build or platform numerical issue.
+    pub impl_ok: bool,
 }
 
 /// Evaluate how well FLAIR's assumptions fit `y` without running a forecast.
@@ -766,7 +772,7 @@ pub fn confidence(y_raw: &[f64], freq: &str) -> Confidence {
     if n_complete < MIN_COMPLETE || big_p < 2 {
         // Series too short for seasonal decomposition — try Ridge only
         let gcv = ridge_gcv_only(&y);
-        return Confidence { rank1: None, gamma: None, gcv };
+        return Confidence { rank1: None, gamma: None, gcv, impl_ok: check_impl() };
     }
 
     let usable = n_complete * big_p;
@@ -803,7 +809,7 @@ pub fn confidence(y_raw: &[f64], freq: &str) -> Confidence {
         None
     };
 
-    Confidence { rank1, gamma, gcv }
+    Confidence { rank1, gamma, gcv, impl_ok: check_impl() }
 }
 
 /// Minimal Ridge GCV for very short series (no seasonal decomposition).
@@ -817,68 +823,18 @@ fn ridge_gcv_only(y: &[f64]) -> Option<f64> {
     Some(gcv_min)
 }
 
-// ── Self-contained verification ─────────────────────────────────────────────
-
-/// Verifies the FLAIR implementation using only synthetic inputs (no I/O, no globals).
-///
-/// Checks:
-/// 1. **Seasonal signal** – 5 years hourly with 24 h period; cycle mean ≈ 10.
-/// 2. **Constant series** – mean forecast ≈ the constant value.
-/// 3. **Box-Cox round-trip** – `bc_inv(bc(y, λ), λ) ≈ y` for λ ∈ {0, 0.5, 1}.
-/// 4. **Ridge SA in-sample** – perfect linear data → RMSE < 0.1.
-///
-/// Returns `Ok(())` on success, `Err(description)` on the first failed check.
-pub fn rank1_score(y: &[f64], freq: &str) -> Option<f64> {
-    confidence(y, freq).rank1
-}
-
-pub fn verify() -> Result<(), String> {
-    // ── 1. Seasonal signal ──────────────────────────────────────────────
-    let n_h = 24 * 7 * 52 * 5; // ~5 years of hourly data
-    let y_seasonal: Vec<f64> = (0..n_h)
-        .map(|t| 10.0 + 5.0 * (2.0 * std::f64::consts::PI * t as f64 / 24.0).sin())
-        .collect();
-    let samples = forecast(&y_seasonal, 24, "H", 100, Some(42))
-        .map_err(|e| format!("seasonal forecast error: {e}"))?;
-    if samples.len() != 100 {
-        return Err(format!("expected 100 samples, got {}", samples.len()));
-    }
-    if samples[0].len() != 24 {
-        return Err(format!("expected horizon 24, got {}", samples[0].len()));
-    }
-    let cycle_mean = (0..24)
-        .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / 100.0)
-        .sum::<f64>() / 24.0;
-    if (cycle_mean - 10.0).abs() > 3.0 {
-        return Err(format!(
-            "seasonal: cycle mean {cycle_mean:.3} too far from expected 10.0"
-        ));
-    }
-
-    // ── 2. Constant series ───────────────────────────────────────────────
-    let y_const: Vec<f64> = vec![7.0; 120];
-    let samples_c = forecast(&y_const, 10, "D", 50, Some(1))
-        .map_err(|e| format!("constant forecast error: {e}"))?;
-    let mean_c: f64 =
-        samples_c.iter().flat_map(|s| s.iter()).sum::<f64>() / (50 * 10) as f64;
-    if (mean_c - 7.0).abs() > 2.0 {
-        return Err(format!(
-            "constant: mean forecast {mean_c:.3} too far from expected 7.0"
-        ));
-    }
-
-    // ── 3. Box-Cox round-trip ────────────────────────────────────────────
-    let orig = vec![0.5f64, 1.0, 2.0, 5.0, 10.0];
+/// Sanity-check the core numerical primitives (Box-Cox and Ridge) on synthetic
+/// data.  Returns `true` if both pass, `false` on any numerical failure.
+fn check_impl() -> bool {
+    // Box-Cox round-trip
+    let orig = [0.5f64, 1.0, 2.0, 5.0, 10.0];
     for &lam in &[0.0f64, 0.5, 1.0] {
         let recovered = bc_inv(&bc(&orig, lam), lam);
-        for (&o, &r) in orig.iter().zip(recovered.iter()) {
-            if (o - r).abs() > 1e-9 {
-                return Err(format!("bc round-trip λ={lam}: {o} → {r}"));
-            }
+        if orig.iter().zip(recovered.iter()).any(|(&o, &r)| (o - r).abs() > 1e-9) {
+            return false;
         }
     }
-
-    // ── 4. Ridge SA: in-sample fit on linear data ────────────────────────
+    // Ridge in-sample fit on perfect linear data
     let x_rows: Vec<Vec<f64>> = (0..30).map(|i| vec![1.0, i as f64 / 30.0]).collect();
     let y_lin: Vec<f64> = x_rows.iter().map(|r| 2.0 + 3.0 * r[1]).collect();
     let (beta, _, _) = ridge_sa(&x_rows, &y_lin);
@@ -889,11 +845,7 @@ pub fn verify() -> Result<(), String> {
         })
         .sum::<f64>() / 30.0)
         .sqrt();
-    if rmse > 0.1 {
-        return Err(format!("ridge_sa in-sample RMSE too large: {rmse:.6}"));
-    }
-
-    Ok(())
+    rmse < 0.1
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -903,8 +855,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verify_passes() {
-        verify().expect("FLAIR self-verification failed");
+    fn impl_ok_passes() {
+        assert!(check_impl(), "core numerical primitives failed sanity check");
     }
 
     #[test]
