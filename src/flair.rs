@@ -416,7 +416,7 @@ fn estimate_shape(
     let mut s_ctx: Vec<Vec<f64>> = vec![s_global.clone(); c];
     for c_val in 0..c {
         let mask: Vec<usize> = ds_ctx.iter().enumerate()
-            .filter(|(_, &cv)| cv == c_val).map(|(i, _)| i).collect();
+            .filter(|&(_, &cv)| cv == c_val).map(|(i, _)| i).collect();
         if mask.is_empty() { continue; }
         let l_sum: f64 = mask.iter().map(|&i| ds_l[i]).sum();
         let denom = (kappa + l_sum).max(EPS);
