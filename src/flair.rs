@@ -716,6 +716,101 @@ pub fn forecast_mean(
     Ok((0..horizon).map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n).collect())
 }
 
+// ── Confidence report ──────────────────────────────────────────────────────
+
+/// Self-evaluation of how well FLAIR's assumptions fit the input series.
+/// All fields are derived solely from `y` and `freq` — no forecast is run.
+#[derive(Debug, Clone)]
+pub struct Confidence {
+    /// `s[0]^2 / Σs^2` of the seasonal matrix (period × n_complete).
+    /// Measures how close the data is to rank-1 structure.
+    /// 1.0 = perfect single-component seasonality; ~1/P = flat/random.
+    /// `None` when the series is too short for period decomposition.
+    pub rank1: Option<f64>,
+
+    /// Seasonal strength after removing random-matrix baseline.
+    /// `(r1 - 1/min(P,N)) / (1 - 1/min(P,N))`, clamped to [0, 1].
+    /// 1.0 = strong clean seasonality; 0.0 = no detectable seasonal structure.
+    /// `None` when `rank1` is `None`.
+    pub gamma: Option<f64>,
+
+    /// GCV-optimal LOO error from the Ridge regression on the Level series.
+    /// Lower = Level is more predictable from its own history.
+    /// Scale is that of the Box-Cox-transformed, mean-subtracted Level.
+    /// `None` when the series is too short to fit the Ridge model.
+    pub gcv: Option<f64>,
+}
+
+/// Evaluate how well FLAIR's assumptions fit `y` without running a forecast.
+///
+/// Returns a [`Confidence`] struct with three independent scores derived
+/// purely from the input.  Use this to decide whether a forecast is likely
+/// to be meaningful before committing to `n_samples` Monte-Carlo paths.
+pub fn confidence(y_raw: &[f64], freq: &str) -> Confidence {
+    let n = y_raw.len();
+
+    // Apply the same shift as forecast() so all values > 0
+    let y_floor = y_raw.iter().cloned().fold(f64::INFINITY, f64::min);
+    let y_shift = (1.0 - y_floor).max(1.0);
+    let y: Vec<f64> = y_raw.iter().map(|&v| (if v.is_nan() { 0.0 } else { v }) + y_shift).collect();
+
+    let (big_p, _, _, _) = select_period(&y, n, freq);
+    let n_complete = n / big_p;
+
+    if n_complete < MIN_COMPLETE || big_p < 2 {
+        // Series too short for seasonal decomposition — try Ridge only
+        let gcv = ridge_gcv_only(&y);
+        return Confidence { rank1: None, gamma: None, gcv };
+    }
+
+    let usable = n_complete * big_p;
+    let y_trim = &y[n - usable..];
+    let mat_dm = DMatrix::from_fn(big_p, n_complete, |ph, ci| y_trim[ci * big_p + ph]);
+    let s = svd_singvals(&mat_dm);
+    let total: f64 = s.iter().map(|&v| v * v).sum();
+
+    let (rank1, gamma) = if total < EPS {
+        (None, None)
+    } else {
+        let r1 = s[0] * s[0] / total;
+        let r_rand = 1.0 / big_p.min(n_complete) as f64;
+        let g = ((r1 - r_rand) / (1.0 - r_rand).max(EPS)).clamp(0.0, 1.0);
+        (Some(r1), Some(g))
+    };
+
+    // Level series → Box-Cox → Ridge GCV
+    let l: Vec<f64> = (0..n_complete)
+        .map(|ci| (0..big_p).map(|ph| y_trim[ci * big_p + ph]).sum())
+        .collect();
+    let lam = bc_lambda(&l);
+    let l_bc = bc(&l, lam);
+    let last_l = l_bc[n_complete - 1];
+    let l_innov: Vec<f64> = l_bc.iter().map(|&v| v - last_l).collect();
+
+    let gcv = if n_complete > 2 {
+        let x_rows: Vec<Vec<f64>> = (1..n_complete)
+            .map(|ti| vec![1.0, ti as f64 / n_complete as f64, l_innov[ti - 1]])
+            .collect();
+        let (_, _, gcv_min) = ridge_sa(&x_rows, &l_innov[1..]);
+        Some(gcv_min)
+    } else {
+        None
+    };
+
+    Confidence { rank1, gamma, gcv }
+}
+
+/// Minimal Ridge GCV for very short series (no seasonal decomposition).
+fn ridge_gcv_only(y: &[f64]) -> Option<f64> {
+    let n = y.len();
+    if n < 3 { return None; }
+    let x_rows: Vec<Vec<f64>> = (1..n)
+        .map(|i| vec![1.0, i as f64 / n as f64, y[i - 1]])
+        .collect();
+    let (_, _, gcv_min) = ridge_sa(&x_rows, &y[1..]);
+    Some(gcv_min)
+}
+
 // ── Self-contained verification ─────────────────────────────────────────────
 
 /// Verifies the FLAIR implementation using only synthetic inputs (no I/O, no globals).
@@ -727,32 +822,8 @@ pub fn forecast_mean(
 /// 4. **Ridge SA in-sample** – perfect linear data → RMSE < 0.1.
 ///
 /// Returns `Ok(())` on success, `Err(description)` on the first failed check.
-/// Returns the rank-1 explained variance ratio of the seasonal matrix built from `y`.
-///
-/// Reshapes `y` into a (period × n_complete) matrix and computes
-/// `s[0]^2 / sum(s^2)` from its singular values.  A value close to 1.0 means
-/// the series is well approximated by a rank-1 (pure seasonal) structure —
-/// i.e. the rank-1 assumption holds.  Values below ~0.5 indicate that the
-/// input has complex multi-component structure or noise dominance.
-///
-/// Returns `None` if the series is too short to form at least `MIN_COMPLETE`
-/// complete periods.
 pub fn rank1_score(y: &[f64], freq: &str) -> Option<f64> {
-    let n = y.len();
-    let (big_p, _, _, _) = select_period(y, n, freq);
-    let n_complete = n / big_p;
-    if n_complete < MIN_COMPLETE || big_p < 2 {
-        return None;
-    }
-    let usable = n_complete * big_p;
-    let y_trim = &y[n - usable..];
-    let mat = DMatrix::from_fn(big_p, n_complete, |ph, ci| y_trim[ci * big_p + ph]);
-    let s = svd_singvals(&mat);
-    let total: f64 = s.iter().map(|&v| v * v).sum();
-    if total < EPS {
-        return None;
-    }
-    Some(s[0] * s[0] / total)
+    confidence(y, freq).rank1
 }
 
 pub fn verify() -> Result<(), String> {

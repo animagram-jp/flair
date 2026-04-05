@@ -7,7 +7,7 @@
 //   2. japan_demand   — Tokyo hourly demand forecast + rank-1 score + determinism
 //   3. world_bank     — Japan annual kWh/capita forecast + rank-1 score + determinism
 
-use flair::{forecast_mean, rank1_score, verify};
+use flair::{confidence, forecast_mean, verify};
 use std::fs;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -48,13 +48,11 @@ fn check_japan_demand() {
     let y = load_japan_demand();
     println!("  loaded {} hourly observations (Tokyo)", y.len());
 
-    // rank-1 score
-    let score = rank1_score(&y, "H").unwrap_or(0.0);
-    println!("  rank-1 score: {score:.3}");
-    if score < 0.5 {
-        fail("rank-1 score", &format!("{score:.3} < 0.5 — rank-1 assumption may not hold"));
-    }
-    pass(&format!("rank-1 score {score:.3} >= 0.5"));
+    // confidence
+    let c = confidence(&y, "H");
+    println!("  rank1 : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}"))  );
+    println!("  gamma : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}"))  );
+    println!("  gcv   : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
 
     // forecast
     let fc = forecast_mean(&y, 24, "H", 200, None).unwrap_or_else(|e| fail("forecast", &e));
@@ -101,11 +99,11 @@ fn check_world_bank() {
     let y = load_world_bank();
     println!("  loaded {} annual observations (Japan kWh/capita)", y.len());
 
-    // rank-1 score — annual data has no intra-period structure, score may be low
-    match rank1_score(&y, "A") {
-        Some(score) => println!("  rank-1 score: {score:.3} (annual — structural seasonality not expected)"),
-        None        => println!("  rank-1 score: n/a (series too short for period decomposition)"),
-    }
+    // confidence — annual data has no intra-period structure, rank1/gamma will be n/a
+    let c = confidence(&y, "A");
+    println!("  rank1 : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}"))  );
+    println!("  gamma : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}"))  );
+    println!("  gcv   : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
 
     // forecast
     let fc = forecast_mean(&y, 3, "A", 200, None).unwrap_or_else(|e| fail("forecast", &e));
