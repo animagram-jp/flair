@@ -28,6 +28,34 @@ Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 
 ## test
 
+### verify
+
+`verify()` runs a self-contained judge on 4 internal checks (no I/O, no external data):
+
+| check | description |
+|---|---|
+| seasonal signal | 5-year hourly sine wave → cycle mean ≈ 10.0 |
+| constant series | flat input → forecast mean ≈ input value |
+| Box-Cox round-trip | `bc_inv(bc(y, λ), λ) ≈ y` for λ ∈ {0, 0.5, 1} |
+| Ridge SA in-sample | perfect linear data → RMSE < 0.1 |
+
+```
+$ cargo run --example verify
+verify: OK — all checks passed
+```
+
+### determinism
+
+Same seed produces bit-identical results; different seeds diverge.  
+Input: Tokyo hourly demand (70,128 obs), `forecast_mean(..., 200, Some(seed))`
+
+```
+$ cargo run --example determinism
+same seed (42 == 42): identical ✓
+diff seed (42 != 99): different ✓
+determinism: OK
+```
+
 ### japan_demand_forecast
 
 Input: Tokyo hourly electricity demand, 70,128 observations (2016-04-01 – 2024-03-31)  
