@@ -510,7 +510,12 @@ pub fn forecast(
     if n_samples < 1 { return Err(format!("n_samples must be >= 1, got {n_samples}")); }
     if y_raw.is_empty() { return Err("y must not be empty".into()); }
 
-    let mut rng = Rng::new(seed.unwrap_or(0));
+    let mut rng = Rng::new(seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs().wrapping_mul(0x9e3779b97f4a7c15)))
+            .unwrap_or(0xdeadbeefcafe1234)
+    }));
 
     // NaN-to-zero + shift so all values >= 1
     let mut y: Vec<f64> = y_raw.iter().map(|&v| if v.is_nan() { 0.0 } else { v }).collect();

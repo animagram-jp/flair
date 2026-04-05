@@ -66,14 +66,15 @@ fn check_japan_demand() {
     if fc.len() % 4 != 0 { println!(); }
     pass("forecast shape and finiteness");
 
-    // determinism: same seed → identical, different seed → different
-    // Note: seed=None maps to 0 internally (fixed default seed), so it is also deterministic.
+    // determinism: same seed → identical, seed=None → non-deterministic
     let a = forecast_mean(&y, 24, "H", 200, Some(42)).unwrap();
     let b = forecast_mean(&y, 24, "H", 200, Some(42)).unwrap();
-    let c = forecast_mean(&y, 24, "H", 200, Some(99)).unwrap();
+    let c = forecast_mean(&y, 24, "H", 200, None).unwrap();
+    let d = forecast_mean(&y, 24, "H", 200, None).unwrap();
     if a != b { fail("determinism", "same seed produced different results"); }
     if a == c { fail("determinism", "different seeds produced identical results"); }
-    pass("determinism (same seed identical, different seeds differ)");
+    if c == d { fail("non-determinism", "seed=None produced identical results across runs"); }
+    pass("determinism (same seed identical; seed=None non-deterministic)");
 }
 
 // ── 3. world bank annual kWh/capita ──────────────────────────────────────────
@@ -117,10 +118,12 @@ fn check_world_bank() {
     // determinism
     let a = forecast_mean(&y, 3, "A", 200, Some(42)).unwrap();
     let b = forecast_mean(&y, 3, "A", 200, Some(42)).unwrap();
-    let c = forecast_mean(&y, 3, "A", 200, Some(99)).unwrap();
+    let c = forecast_mean(&y, 3, "A", 200, None).unwrap();
+    let d = forecast_mean(&y, 3, "A", 200, None).unwrap();
     if a != b { fail("determinism", "same seed produced different results"); }
     if a == c { fail("determinism", "different seeds produced identical results"); }
-    pass("determinism (same seed identical, different seeds differ)");
+    if c == d { fail("non-determinism", "seed=None produced identical results across runs"); }
+    pass("determinism (same seed identical; seed=None non-deterministic)");
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
