@@ -30,22 +30,6 @@ Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 
 Run all checks: `cargo run --example integration_tests`
 
-### verify
-
-`verify()` — self-contained implementation check, no external data.
-
-| check | criterion |
-|---|---|
-| seasonal signal | 5-year hourly sine wave, cycle mean ≈ 10.0 (tolerance ±3) |
-| constant series | flat input → forecast mean ≈ input value (tolerance ±2) |
-| Box-Cox round-trip | `bc_inv(bc(y, λ), λ) ≈ y` for λ ∈ {0, 0.5, 1}, tol 1e-9 |
-| Ridge SA in-sample | perfect linear data → RMSE < 0.1 |
-
-```
-=== verify ===
-  [OK] seasonal / constant / box-cox / ridge
-```
-
 ### confidence
 
 `confidence(y, freq)` — self-evaluation from input only, no forecast needed.
@@ -55,19 +39,22 @@ Run all checks: `cargo run --example integration_tests`
 | `rank1` | `s[0]²/Σs²` of seasonal matrix. 1.0 = pure rank-1 seasonality. `n/a` when period=1 (e.g. annual) or series too short — not an error |
 | `gamma` | seasonal strength above random-matrix baseline, [0, 1]. 1.0 = strong clean seasonality |
 | `gcv` | Ridge LOO error on Level series. lower = Level more predictable. scale depends on Box-Cox transform |
+| `impl_ok` | Box-Cox round-trip and Ridge in-sample sanity check on synthetic data. `false` indicates a build or platform numerical issue |
 
 **japan_demand** (hourly, strong seasonality):
 ```
-  rank1 : 0.996   ← near-perfect rank-1 fit
-  gamma : 0.996   ← strong seasonal structure
-  gcv   : 0.0056  ← Level highly predictable
+  rank1   : 0.996   ← near-perfect rank-1 fit
+  gamma   : 0.996   ← strong seasonal structure
+  gcv     : 0.0056  ← Level highly predictable
+  impl_ok : true
 ```
 
 **world_bank** (annual, no intra-period structure):
 ```
-  rank1 : n/a     ← period=1 by design; FLAIR runs Level-only AR
-  gamma : n/a
-  gcv   : 41186   ← Level predictability in kWh/capita units
+  rank1   : n/a     ← period=1 by design; FLAIR runs Level-only AR
+  gamma   : n/a
+  gcv     : 41186   ← Level predictability in kWh/capita units
+  impl_ok : true
 ```
 
 ### forecast
