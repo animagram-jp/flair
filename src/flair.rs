@@ -936,4 +936,46 @@ mod tests {
         let y: Vec<f64> = (0..50).map(|i| i as f64).collect();
         assert!(forecast_quantiles(&y, 5, "M", 10, None, &[0.5, 1.5]).is_err());
     }
+
+    // ── regression tests against real dataset subsets ─────────────────────
+    //
+    // Dataset: examples/dataset/japan_demand_unit.csv
+    //   first 500 hourly observations (Tokyo column) from japan_demand.csv
+    // Expected values generated with seed=0, n_samples=50 and recorded here.
+    // A failure means the algorithm output changed — verify intentionality.
+
+    fn load_japan_demand_unit() -> Vec<f64> {
+        let content = std::fs::read_to_string("examples/dataset/japan_demand_unit.csv")
+            .expect("examples/dataset/japan_demand_unit.csv not found");
+        content.lines().skip(1)
+            .filter_map(|l| l.split(',').nth(4)?.trim().parse::<f64>().ok())
+            .collect()
+    }
+
+    #[test]
+    fn regression_japan_demand_unit_confidence() {
+        let y = load_japan_demand_unit();
+        let c = confidence(&y, "H");
+        assert!(c.impl_ok);
+        let rank1 = c.rank1.expect("rank1 should be Some");
+        let gamma = c.gamma.expect("gamma should be Some");
+        assert!((rank1 - 0.9984).abs() < 1e-3, "rank1 changed: {rank1}");
+        assert!((gamma - 0.9983).abs() < 1e-3, "gamma changed: {gamma}");
+    }
+
+    #[test]
+    fn regression_japan_demand_unit_forecast() {
+        let y = load_japan_demand_unit();
+        let fc = forecast_mean(&y, 24, "H", 50, Some(0)).unwrap();
+        let expected = [
+            31824.0, 30195.0, 28891.0, 26933.0, 24844.0, 23654.0,
+            23264.0, 23228.0, 23493.0, 24226.0, 25899.0, 27743.0,
+            29983.0, 32015.0, 32462.0, 32176.0, 30510.0, 31863.0,
+            31829.0, 31659.0, 31870.0, 31706.0, 32563.0, 31768.0,
+        ];
+        assert_eq!(fc.len(), 24);
+        for (h, (&got, &exp)) in fc.iter().zip(expected.iter()).enumerate() {
+            assert!((got - exp).abs() < 1.0, "h={h}: got {got}, expected {exp}");
+        }
+    }
 }
