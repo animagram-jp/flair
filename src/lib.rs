@@ -1,2 +1,2 @@
 pub mod flair;
-pub use flair::{confidence, forecast, forecast_mean, Confidence};
+pub use flair::{confidence, forecast, forecast_mean, forecast_quantiles, Confidence};

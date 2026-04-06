@@ -1,32 +1,32 @@
 # flair
 
-This is a Rust implement OSS of time series forecasting method FLAIR by Takato Honda.
+This is a Rust implement of time series forecasting method FLAIR by Takato Honda.
 
-## lisence
+## Version
 
-Apache-2.0
-Original: https://github.com/TakatoHonda/FLAIR
-Changes: Ported from Python to Rust
-Author: Andyou <andyou@animagram.jp>
+| Version | Status    | Date      | Description |
+|---------|-----------|-----------|-------------|
+| 0.1.0   | Scheduled | 2026-4-7  | initial     |
 
-## todo
+## Provided Functions
 
-- 既存に開発者本人がapache-2.0 licenseで公開中の時系列解析FLAIRを、Rustにてメモリ合理性とポータビリティを考慮して再実装する
-  - Rust組み込み関数使用可。SVDも一時的に使用可
-  - 入力のみを利用した、成果物の自己検証pub fnも必要。信頼性評価を出力する
-  - 実体を網羅実装後、docTestとunit testを整備
-- 動作検証と静動パフォーマンスメモリ実測を行う
+| Mod     | Fn | Description | 
+|---------|----|-------------|
+| `flair` | `forecast`           |  |
+|         | `forecast_mean`      |  |
+|         | `forecast_quantiles` |  |
+|         | `confidence`         |  |
 
-## performance
+## Performance
 
 Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 
 | dataset | obs | binary size | peak RSS | wall time |
-|---|---|---|---|---|
-| japan_demand (hourly) | 70,128 | 687 KB | 9.7 MB | 0.02 s |
-| world_bank (annual) | 34 | 688 KB | 2.9 MB | < 0.01 s |
+|---------|-----|-------------|----------|-----------|
+| japan_demand (hourly) | 70,128 | 687 KB | 9.7 MB |   0.02 s |
+| world_bank (annual)   | 34     | -      | 2.9 MB | < 0.01 s |
 
-## test
+### Test
 
 Run all checks: `cargo run --example integration_tests`
 
@@ -91,7 +91,16 @@ Same seed → bit-identical output. Different seeds → different output.
   [OK] determinism (same seed identical; seed=None non-deterministic)
 ```
 
-## reference
+## Reference
 
 - https://github.com/TakatoHonda/FLAIR
 - https://zenn.dev/t_honda/articles/flair-time-series-forecasting
+
+## Lisence
+
+```
+Apache-2.0
+Original: https://github.com/TakatoHonda/FLAIR
+Changes: Ported from Python to Rust
+Author: Andyou <andyou@animagram.jp>
+```

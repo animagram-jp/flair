@@ -703,6 +703,32 @@ pub fn forecast(
     Ok(samples)
 }
 
+/// Quantile forecast: returns `[quantile][horizon]` for each q in `quantiles`.
+///
+/// `quantiles` must all be in [0, 1].  Returns an error if any are out of range.
+pub fn forecast_quantiles(
+    y: &[f64],
+    horizon: usize,
+    freq: &str,
+    n_samples: usize,
+    seed: Option<u64>,
+    quantiles: &[f64],
+) -> Result<Vec<Vec<f64>>, String> {
+    if let Some(&q) = quantiles.iter().find(|&&q| !(0.0..=1.0).contains(&q)) {
+        return Err(format!("quantile {q} out of range [0, 1]"));
+    }
+    let samples = forecast(y, horizon, freq, n_samples, seed)?;
+    let ns = samples.len();
+    Ok(quantiles.iter().map(|&q| {
+        (0..horizon).map(|h| {
+            let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
+            col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let idx = (q * (ns - 1) as f64).round() as usize;
+            col[idx]
+        }).collect()
+    }).collect())
+}
+
 /// Point forecast: mean over `n_samples` paths.
 pub fn forecast_mean(
     y: &[f64],
@@ -891,5 +917,23 @@ mod tests {
         let m = forecast_mean(&y, 7, "D", 20, Some(5)).unwrap();
         assert_eq!(m.len(), 7);
         assert!(m.iter().all(|&v| v.is_finite()));
+    }
+
+    #[test]
+    fn forecast_quantiles_shape_and_order() {
+        let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.26).sin() * 3.0 + 10.0).collect();
+        let qs = [0.1, 0.5, 0.9];
+        let q = forecast_quantiles(&y, 12, "M", 100, Some(0), &qs).unwrap();
+        assert_eq!(q.len(), 3);
+        assert!(q.iter().all(|row| row.len() == 12));
+        for h in 0..12 {
+            assert!(q[0][h] <= q[1][h] && q[1][h] <= q[2][h]);
+        }
+    }
+
+    #[test]
+    fn forecast_quantiles_invalid_q() {
+        let y: Vec<f64> = (0..50).map(|i| i as f64).collect();
+        assert!(forecast_quantiles(&y, 5, "M", 10, None, &[0.5, 1.5]).is_err());
     }
 }
