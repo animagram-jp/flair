@@ -12,10 +12,10 @@ This is a Rust implement of time series forecasting method FLAIR by Takato Honda
 
 | Mod     | Fn | Description | 
 |---------|----|-------------|
-| `flair` | `forecast`           |  |
+| `flair` | `confidence`         |  |
+|         | `forecast`           |  |
 |         | `forecast_mean`      |  |
 |         | `forecast_quantiles` |  |
-|         | `confidence`         |  |
 
 ## Performance
 
@@ -32,7 +32,7 @@ Run all checks: `cargo run --example integration_tests`
 
 ### confidence
 
-`confidence(y, freq)` — self-evaluation from input only, no forecast needed.
+`confidence(y, freq)` — self-evaluation from only input
 
 | field | description |
 |---|---|
