@@ -22,8 +22,8 @@ fn fail(label: &str, reason: &str) -> ! {
 // ── 2. japan demand (hourly, 9 regions) ──────────────────────────────────────
 
 fn load_japan_demand() -> Vec<f64> {
-    let path = "examples/test_data/japan_electricity_demand.csv";
-    let content = fs::read_to_string(path).expect("failed to read japan_electricity_demand.csv");
+    let path = "examples/dataset/japan_demand.csv";
+    let content = fs::read_to_string(path).expect("failed to read japan_demand.csv");
     content
         .lines()
         .skip(1)
@@ -70,8 +70,8 @@ fn check_japan_demand() {
 // ── 3. world bank annual kWh/capita ──────────────────────────────────────────
 
 fn load_world_bank() -> Vec<f64> {
-    let path = "examples/test_data/world_bank_electricity/API_EG.USE.ELEC.KH.PC_DS2_en_csv_v2_258.csv";
-    let content = fs::read_to_string(path).expect("failed to read world_bank CSV");
+    let path = "examples/dataset/world_bank.csv";
+    let content = fs::read_to_string(path).expect("failed to read world_bank.csv");
     let japan_line = content
         .lines()
         .find(|l| l.contains("\"Japan\""))
@@ -124,3 +124,4 @@ fn main() {
     check_world_bank();
     println!("\nAll integration tests passed.");
 }
+
