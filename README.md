@@ -6,7 +6,7 @@ This is a Rust implement of time series forecasting method FLAIR by Takato Honda
 
 | Version | Status    | Date      | Description |
 |---------|-----------|-----------|-------------|
-| 0.1.0   | Scheduled | 2026-4-7  | initial     |
+| 0.1.0   | Scheduled | 2026-4-12 | initial     |
 
 ## Provided Functions
 
