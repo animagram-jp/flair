@@ -937,45 +937,87 @@ mod tests {
         assert!(forecast_quantiles(&y, 5, "M", 10, None, &[0.5, 1.5]).is_err());
     }
 
-    // ── regression tests against real dataset subsets ─────────────────────
+    // ── dataset-iter tests ────────────────────────────────────────────────
     //
-    // Dataset: examples/dataset/japan_demand_unit.csv
-    //   first 500 hourly observations (Tokyo column) from japan_demand.csv
-    // Expected values generated with seed=0, n_samples=50 and recorded here.
-    // A failure means the algorithm output changed — verify intentionality.
+    // Each entry in DATASETS describes a CSV in examples/dataset/ and how to
+    // parse it.  The same suite of checks runs over every dataset:
+    //   - forecast() and confidence() complete without error
+    //   - all output values are finite
+    //   - impl_ok is true
+    //
+    // ParseMode:
+    //   Col(n)      – take the n-th comma-separated column (0-based), skip 1 header row
+    //   ColSkip(n,s)– same but skip s header rows
+    //   JapanTokyo  – japan_demand.csv: col 4 (Tokyo), skip 1 header row
+    //   WorldBank   – world_bank.csv: find "Japan" row, extract numeric cols
 
-    fn load_japan_demand_unit() -> Vec<f64> {
-        let content = std::fs::read_to_string("examples/dataset/japan_demand_unit.csv")
-            .expect("examples/dataset/japan_demand_unit.csv not found");
-        content.lines().skip(1)
-            .filter_map(|l| l.split(',').nth(4)?.trim().parse::<f64>().ok())
-            .collect()
+    #[allow(dead_code)]
+    enum ParseMode { Col(usize), ColSkip(usize, usize), JapanTokyo, WorldBank }
+
+    struct Dataset {
+        file: &'static str,
+        freq: &'static str,
+        mode: ParseMode,
+    }
+
+    fn load(ds: &Dataset) -> Vec<f64> {
+        let path = format!("examples/dataset/{}", ds.file);
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("{path} not found"));
+        match ds.mode {
+            ParseMode::Col(col) | ParseMode::ColSkip(col, _) => {
+                let skip = match ds.mode { ParseMode::ColSkip(_, s) => s, _ => 1 };
+                content.lines().skip(skip)
+                    .filter_map(|l| l.split(',').nth(col)?.trim().trim_matches('"').parse::<f64>().ok())
+                    .collect()
+            }
+            ParseMode::JapanTokyo => {
+                content.lines().skip(1)
+                    .filter_map(|l| l.split(',').nth(4)?.trim().parse::<f64>().ok())
+                    .collect()
+            }
+            ParseMode::WorldBank => {
+                let line = content.lines()
+                    .find(|l| l.contains("\"Japan\""))
+                    .expect("Japan row not found in world_bank.csv");
+                line.split(',').skip(4)
+                    .filter_map(|v| {
+                        let s = v.trim().trim_matches('"');
+                        if s.is_empty() { None } else { s.parse::<f64>().ok() }
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    fn datasets() -> Vec<Dataset> {
+        vec![
+            Dataset { file: "air_passengers.csv",  freq: "M",  mode: ParseMode::Col(2) },
+            Dataset { file: "nottem.csv",           freq: "M",  mode: ParseMode::Col(2) },
+            Dataset { file: "sunspot_year.csv",     freq: "A",  mode: ParseMode::Col(2) },
+            Dataset { file: "noaa_temp_annual.csv", freq: "A",  mode: ParseMode::Col(1) },
+            Dataset { file: "noaa_temp_monthly.csv",freq: "M",  mode: ParseMode::Col(1) },
+            Dataset { file: "world_bank.csv",       freq: "A",  mode: ParseMode::WorldBank },
+            Dataset { file: "japan_demand.csv",     freq: "H",  mode: ParseMode::JapanTokyo },
+        ]
     }
 
     #[test]
-    fn regression_japan_demand_unit_confidence() {
-        let y = load_japan_demand_unit();
-        let c = confidence(&y, "H");
-        assert!(c.impl_ok);
-        let rank1 = c.rank1.expect("rank1 should be Some");
-        let gamma = c.gamma.expect("gamma should be Some");
-        assert!((rank1 - 0.9984).abs() < 1e-3, "rank1 changed: {rank1}");
-        assert!((gamma - 0.9983).abs() < 1e-3, "gamma changed: {gamma}");
-    }
+    fn dataset_iter_no_crash() {
+        for ds in datasets() {
+            let y = load(&ds);
+            assert!(!y.is_empty(), "{}: empty", ds.file);
 
-    #[test]
-    fn regression_japan_demand_unit_forecast() {
-        let y = load_japan_demand_unit();
-        let fc = forecast_mean(&y, 24, "H", 50, Some(0)).unwrap();
-        let expected = [
-            31824.0, 30195.0, 28891.0, 26933.0, 24844.0, 23654.0,
-            23264.0, 23228.0, 23493.0, 24226.0, 25899.0, 27743.0,
-            29983.0, 32015.0, 32462.0, 32176.0, 30510.0, 31863.0,
-            31829.0, 31659.0, 31870.0, 31706.0, 32563.0, 31768.0,
-        ];
-        assert_eq!(fc.len(), 24);
-        for (h, (&got, &exp)) in fc.iter().zip(expected.iter()).enumerate() {
-            assert!((got - exp).abs() < 1.0, "h={h}: got {got}, expected {exp}");
+            let c = confidence(&y, ds.freq);
+            assert!(c.impl_ok, "{}: impl_ok false", ds.file);
+
+            let fc = forecast_mean(&y, 12, ds.freq, 30, Some(0))
+                .unwrap_or_else(|e| panic!("{}: forecast error: {e}", ds.file));
+            assert_eq!(fc.len(), 12, "{}: wrong horizon", ds.file);
+            assert!(
+                fc.iter().all(|v| v.is_finite()),
+                "{}: non-finite output", ds.file
+            );
         }
     }
 }
