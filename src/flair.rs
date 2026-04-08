@@ -14,11 +14,8 @@ use alloc::{
     vec,
     vec::Vec,
 };
-#[cfg(all(test, feature = "std"))]
-use std::fs;
-#[cfg(feature = "std")]
-use std::time::{SystemTime, UNIX_EPOCH};
 use crate::svd;
+use libm::{sqrt, log as ln, exp, pow, sin, cos, round};
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -63,7 +60,7 @@ impl Rng {
     fn normal(&mut self) -> f64 {
         let u1 = self.next_f64().max(1e-300);
         let u2 = self.next_f64();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+        sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)
     }
 }
 
@@ -75,19 +72,19 @@ fn bc_lambda(y: &[f64]) -> f64 {
         return 1.0;
     }
     let n = yp.len() as f64;
-    let log_sum: f64 = yp.iter().map(|&v| v.ln()).sum();
+    let log_sum: f64 = yp.iter().map(|&v| ln(v)).sum();
     let llf = |lam: f64| -> f64 {
         let yt: Vec<f64> = if lam.abs() < 1e-10 {
-            yp.iter().map(|&v| v.ln()).collect()
+            yp.iter().map(|&v| ln(v)).collect()
         } else {
-            yp.iter().map(|&v| (v.powf(lam) - 1.0) / lam).collect()
+            yp.iter().map(|&v| (pow(v, lam) - 1.0) / lam).collect()
         };
         let m = yt.iter().sum::<f64>() / n;
-        let var = yt.iter().map(|&v| (v - m).powi(2)).sum::<f64>() / n;
+        let var = yt.iter().map(|&v| pow(v - m, 2.0)).sum::<f64>() / n;
         if var < EPS_LOG { return f64::NEG_INFINITY; }
-        (lam - 1.0) * log_sum - n / 2.0 * var.ln()
+        (lam - 1.0) * log_sum - n / 2.0 * ln(var)
     };
-    let phi = (5.0_f64.sqrt() - 1.0) / 2.0;
+    let phi = (sqrt(5.0_f64) - 1.0) / 2.0;
     let (mut a, mut b) = (0.0f64, 1.0f64);
     let mut c = b - phi * (b - a);
     let mut d = a + phi * (b - a);
@@ -104,16 +101,16 @@ fn bc_lambda(y: &[f64]) -> f64 {
 fn bc(y: &[f64], lam: f64) -> Vec<f64> {
     y.iter().map(|&v| {
         let v = v.max(EPS_BOXCOX);
-        if lam == 0.0 { v.ln() } else { (v.powf(lam) - 1.0) / lam }
+        if lam == 0.0 { ln(v) } else { (pow(v, lam) - 1.0) / lam }
     }).collect()
 }
 
 fn bc_inv(z: &[f64], lam: f64) -> Vec<f64> {
     z.iter().map(|&v| {
         if lam == 0.0 {
-            v.clamp(-BC_EXP_CLIP, BC_EXP_CLIP).exp()
+            exp(v.clamp(-BC_EXP_CLIP, BC_EXP_CLIP))
         } else {
-            (v * lam + 1.0).max(EPS).powf(1.0 / lam)
+            pow((v * lam + 1.0).max(EPS), 1.0 / lam)
         }
     }).collect()
 }
@@ -121,7 +118,7 @@ fn bc_inv(z: &[f64], lam: f64) -> Vec<f64> {
 // ── helpers ────────────────────────────────────────────────────────────────
 
 fn logspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
-    (0..n).map(|i| 10.0_f64.powf(lo + (hi - lo) * i as f64 / (n - 1) as f64)).collect()
+    (0..n).map(|i| pow(10.0_f64, lo + (hi - lo) * i as f64 / (n - 1) as f64)).collect()
 }
 
 fn slice_mean(v: &[f64]) -> f64 { v.iter().sum::<f64>() / v.len() as f64 }
@@ -155,13 +152,13 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
     for (ai, &a) in alphas.iter().enumerate() {
         let d: Vec<f64> = s2.iter().map(|&v| v / (v + a)).collect();
         // hat-matrix diagonal: h[i] = sum_j u[i,j]^2 * d[j]
-        let h: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[i][j].powi(2) * d[j]).sum()).collect();
+        let h: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[i][j] * u[i][j] * d[j]).sum()).collect();
         // residual: r = y - U*(d*Uty)
         let r: Vec<f64> = (0..m).map(|i| {
             y[i] - (0..k).map(|j| u[i][j] * d[j] * uty[j]).sum::<f64>()
         }).collect();
         gcv[ai] = r.iter().zip(h.iter())
-            .map(|(&ri, &hi)| (ri / (1.0 - hi).max(EPS)).powi(2))
+            .map(|(&ri, &hi)| pow(ri / (1.0 - hi).max(EPS), 2.0))
             .sum::<f64>() / m as f64;
     }
 
@@ -169,7 +166,7 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
     let gcv_min = gcv.iter().cloned().fold(f64::INFINITY, f64::min);
     let log_w: Vec<f64> = gcv.iter().map(|&g| -(g - gcv_min) / gcv_min.max(EPS)).collect();
     let lw_max = log_w.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let w_raw: Vec<f64> = log_w.iter().map(|&lw| (lw - lw_max).exp()).collect();
+    let w_raw: Vec<f64> = log_w.iter().map(|&lw| exp(lw - lw_max)).collect();
     let w_sum: f64 = w_raw.iter().sum();
     let w: Vec<f64> = w_raw.iter().map(|&wi| wi / w_sum).collect();
 
@@ -192,7 +189,7 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
     let residuals: Vec<f64> = (0..m).map(|i| {
         y[i] - x_rows[i].iter().zip(beta.iter()).map(|(&xi, &bi)| xi * bi).sum::<f64>()
     }).collect();
-    let h_avg: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[i][j].powi(2) * d_avg[j]).sum()).collect();
+    let h_avg: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[i][j] * u[i][j] * d_avg[j]).sum()).collect();
     let loo: Vec<f64> = residuals.iter().zip(h_avg.iter())
         .map(|(&ri, &hi)| ri / (1.0 - hi).max(EPS))
         .collect();
@@ -208,7 +205,7 @@ fn resolve_freq(freq: &str) -> String {
     let f = freq.trim().to_uppercase().replace("MIN", "T");
     for base in ["W", "Q", "A", "Y"] {
         if f.starts_with(&format!("{base}-")) {
-            return base.to_string();
+            return String::from(base);
         }
     }
     f
@@ -284,7 +281,7 @@ fn select_period(y: &[f64], n: usize, freq: &str) -> (usize, Vec<usize>, usize, 
             let s = svd::singvals(&mat_c);
             let rss1: f64 = s.iter().skip(1).map(|&v| v * v).sum();
             let t = (nc * p_cand) as f64;
-            let bic = t * (rss1 / t).max(EPS_LOG).ln() + (p_cand + nc - 1) as f64 * t.ln();
+            let bic = t * ln((rss1 / t).max(EPS_LOG)) + (p_cand + nc - 1) as f64 * ln(t);
             if bic < best_bic { best_bic = bic; best_p = p_cand; }
         }
         best_p
@@ -310,17 +307,17 @@ fn compute_shape2(l: &[f64], cp: usize, n_complete: usize) -> Option<Vec<f64>> {
     s2_raw.iter_mut().for_each(|v| *v /= raw_mean);
 
     // First-harmonic prior
-    let cos_b: Vec<f64> = (0..cp).map(|i| (2.0 * PI * i as f64 / cp as f64).cos()).collect();
-    let sin_b: Vec<f64> = (0..cp).map(|i| (2.0 * PI * i as f64 / cp as f64).sin()).collect();
+    let cos_b: Vec<f64> = (0..cp).map(|i| cos(2.0 * PI * i as f64 / cp as f64)).collect();
+    let sin_b: Vec<f64> = (0..cp).map(|i| sin(2.0 * PI * i as f64 / cp as f64)).collect();
     let s2_c: Vec<f64> = s2_raw.iter().map(|&v| v - 1.0).collect();
     let a = 2.0 * slice_mean(&s2_c.iter().zip(cos_b.iter()).map(|(&sc, &cb)| sc * cb).collect::<Vec<_>>());
     let b = 2.0 * slice_mean(&s2_c.iter().zip(sin_b.iter()).map(|(&sc, &sb)| sc * sb).collect::<Vec<_>>());
     let s2_harmonic: Vec<f64> = (0..cp).map(|i| 1.0 + a * cos_b[i] + b * sin_b[i]).collect();
 
     let rss_flat: f64 = s2_c.iter().map(|&v| v * v).sum();
-    let rss_harm: f64 = s2_raw.iter().zip(s2_harmonic.iter()).map(|(&r, &h)| (r - h).powi(2)).sum();
-    let bic_flat = cp as f64 * (rss_flat / cp as f64).max(EPS_LOG).ln();
-    let bic_harm = cp as f64 * (rss_harm / cp as f64).max(EPS_LOG).ln() + 2.0 * (cp as f64).ln();
+    let rss_harm: f64 = s2_raw.iter().zip(s2_harmonic.iter()).map(|(&r, &h)| pow(r - h, 2.0)).sum();
+    let bic_flat = cp as f64 * ln((rss_flat / cp as f64).max(EPS_LOG));
+    let bic_harm = cp as f64 * ln((rss_harm / cp as f64).max(EPS_LOG)) + 2.0 * ln(cp as f64);
 
     let s2_prior: Vec<f64> = if bic_harm < bic_flat { s2_harmonic } else { vec![1.0; cp] };
 
@@ -388,7 +385,7 @@ fn estimate_shape(
     let mp: Vec<f64> = (0..big_p).map(|ph| slice_mean(&ds_props[ph])).collect();
     let vp: Vec<f64> = (0..big_p).map(|ph| {
         let m = mp[ph];
-        ds_props[ph].iter().map(|&v| (v - m).powi(2)).sum::<f64>() / (k_ds.max(2) - 1) as f64
+        ds_props[ph].iter().map(|&v| pow(v - m, 2.0)).sum::<f64>() / (k_ds.max(2) - 1) as f64
     }).collect();
 
     let valid_kappas: Vec<f64> = (0..big_p)
@@ -447,7 +444,7 @@ fn dampen_shape(s: &mut Vec<Vec<f64>>, gamma: f64) {
     }
     for row in s.iter_mut() {
         for v in row.iter_mut() {
-            *v = v.max(EPS_LOG).powf(gamma);
+            *v = pow(v.max(EPS_LOG), gamma);
         }
         let sum: f64 = row.iter().sum();
         let sum = sum.max(EPS);
@@ -483,7 +480,7 @@ fn compute_cross_periods(
 /// * `freq`      – frequency string: `"H"`, `"D"`, `"W"`, `"M"`, `"Q"`,
 ///                 `"S"`, `"T"`, `"5T"`, `"10T"`, `"15T"`, `"A"` / `"Y"`
 /// * `n_samples` – number of Monte-Carlo paths (>= 1)
-/// * `seed`      – RNG seed (`None` = non-deterministic)
+/// * `seed`      – RNG seed (use any `u64`; same seed → identical output)
 ///
 /// # Returns
 /// `Ok(Vec<Vec<f64>>)` of shape `[n_samples][horizon]`, or an error string.
@@ -492,23 +489,13 @@ pub fn forecast(
     horizon: usize,
     freq: &str,
     n_samples: usize,
-    seed: Option<u64>,
+    seed: u64,
 ) -> Result<Vec<Vec<f64>>, String> {
     if horizon < 1   { return Err(format!("horizon must be >= 1, got {horizon}")); }
     if n_samples < 1 { return Err(format!("n_samples must be >= 1, got {n_samples}")); }
     if y_raw.is_empty() { return Err("y must not be empty".into()); }
 
-    let mut rng = Rng::new(seed.unwrap_or_else(|| {
-        #[cfg(feature = "std")]
-        {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs().wrapping_mul(0x9e3779b97f4a7c15)))
-                .unwrap_or(0xdeadbeefcafe1234)
-        }
-        #[cfg(not(feature = "std"))]
-        { 0xdeadbeefcafe1234 }
-    }));
+    let mut rng = Rng::new(seed);
 
     // NaN-to-zero + shift so all values >= 1
     let mut y: Vec<f64> = y_raw.iter().map(|&v| if v.is_nan() { 0.0 } else { v }).collect();
@@ -530,8 +517,8 @@ pub fn forecast(
             let diffs: Vec<f64> = y[n - lookback..].windows(2).map(|w| w[1] - w[0]).collect();
             let sigma = if diffs.is_empty() { EPS_SHAPE } else {
                 let m = slice_mean(&diffs);
-                (diffs.iter().map(|&d| (d - m).powi(2)).sum::<f64>() / diffs.len() as f64)
-                    .sqrt().max(EPS_SHAPE)
+                sqrt(diffs.iter().map(|&d| pow(d - m, 2.0)).sum::<f64>() / diffs.len() as f64)
+                    .max(EPS_SHAPE)
             };
             return Ok((0..n_samples).map(|_| {
                 (0..horizon).map(|_| {
@@ -704,7 +691,7 @@ pub fn forecast_quantiles(
     horizon: usize,
     freq: &str,
     n_samples: usize,
-    seed: Option<u64>,
+    seed: u64,
     quantiles: &[f64],
 ) -> Result<Vec<Vec<f64>>, String> {
     if let Some(&q) = quantiles.iter().find(|&&q| !(0.0..=1.0).contains(&q)) {
@@ -716,7 +703,7 @@ pub fn forecast_quantiles(
         (0..horizon).map(|h| {
             let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
             col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-            let idx = (q * (ns - 1) as f64).round() as usize;
+            let idx = round(q * (ns - 1) as f64) as usize;
             col[idx]
         }).collect()
     }).collect())
@@ -728,7 +715,7 @@ pub fn forecast_mean(
     horizon: usize,
     freq: &str,
     n_samples: usize,
-    seed: Option<u64>,
+    seed: u64,
 ) -> Result<Vec<f64>, String> {
     let samples = forecast(y, horizon, freq, n_samples, seed)?;
     let n = samples.len() as f64;
@@ -857,13 +844,12 @@ fn check_impl() -> bool {
     let x_rows: Vec<Vec<f64>> = (0..30).map(|i| vec![1.0, i as f64 / 30.0]).collect();
     let y_lin: Vec<f64> = x_rows.iter().map(|r| 2.0 + 3.0 * r[1]).collect();
     let (beta, _, _) = ridge_sa(&x_rows, &y_lin);
-    let rmse = (x_rows.iter().zip(y_lin.iter())
+    let rmse = sqrt(x_rows.iter().zip(y_lin.iter())
         .map(|(r, &yi)| {
             let pred: f64 = r.iter().zip(beta.iter()).map(|(&xi, &bi)| xi * bi).sum();
-            (yi - pred).powi(2)
+            pow(yi - pred, 2.0)
         })
-        .sum::<f64>() / 30.0)
-        .sqrt();
+        .sum::<f64>() / 30.0);
     rmse < 0.1
 }
 
@@ -872,6 +858,8 @@ fn check_impl() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate std;
+    use std::fs;
 
     #[test]
     fn impl_ok_passes() {
@@ -880,8 +868,8 @@ mod tests {
 
     #[test]
     fn output_shape() {
-        let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.26).sin() * 3.0 + 10.0).collect();
-        let s = forecast(&y, 12, "M", 50, Some(0)).unwrap();
+        let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
+        let s = forecast(&y, 12, "M", 50, 0).unwrap();
         assert_eq!(s.len(), 50);
         assert_eq!(s[0].len(), 12);
     }
@@ -899,24 +887,24 @@ mod tests {
 
     #[test]
     fn error_cases() {
-        assert!(forecast(&[], 5, "H", 10, None).is_err());
-        assert!(forecast(&[1.0, 2.0], 0, "H", 10, None).is_err());
-        assert!(forecast(&[1.0, 2.0], 5, "H", 0, None).is_err());
+        assert!(forecast(&[], 5, "H", 10, 0).is_err());
+        assert!(forecast(&[1.0, 2.0], 0, "H", 10, 0).is_err());
+        assert!(forecast(&[1.0, 2.0], 5, "H", 0, 0).is_err());
     }
 
     #[test]
     fn forecast_mean_shape() {
         let y: Vec<f64> = (0..100).map(|i| i as f64).collect();
-        let m = forecast_mean(&y, 7, "D", 20, Some(5)).unwrap();
+        let m = forecast_mean(&y, 7, "D", 20, 5).unwrap();
         assert_eq!(m.len(), 7);
         assert!(m.iter().all(|&v| v.is_finite()));
     }
 
     #[test]
     fn forecast_quantiles_shape_and_order() {
-        let y: Vec<f64> = (0..200).map(|i| (i as f64 * 0.26).sin() * 3.0 + 10.0).collect();
+        let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
         let qs = [0.1, 0.5, 0.9];
-        let q = forecast_quantiles(&y, 12, "M", 100, Some(0), &qs).unwrap();
+        let q = forecast_quantiles(&y, 12, "M", 100, 0, &qs).unwrap();
         assert_eq!(q.len(), 3);
         assert!(q.iter().all(|row| row.len() == 12));
         for h in 0..12 {
@@ -927,7 +915,7 @@ mod tests {
     #[test]
     fn forecast_quantiles_invalid_q() {
         let y: Vec<f64> = (0..50).map(|i| i as f64).collect();
-        assert!(forecast_quantiles(&y, 5, "M", 10, None, &[0.5, 1.5]).is_err());
+        assert!(forecast_quantiles(&y, 5, "M", 10, 0, &[0.5, 1.5]).is_err());
     }
 
     // ── dataset-iter tests ────────────────────────────────────────────────
@@ -1004,7 +992,7 @@ mod tests {
             let c = confidence(&y, ds.freq);
             assert!(c.impl_ok, "{}: impl_ok false", ds.file);
 
-            let fc = forecast_mean(&y, 12, ds.freq, 30, Some(0))
+            let fc = forecast_mean(&y, 12, ds.freq, 30, 0)
                 .unwrap_or_else(|e| panic!("{}: forecast error: {e}", ds.file));
             assert_eq!(fc.len(), 12, "{}: wrong horizon", ds.file);
             assert!(

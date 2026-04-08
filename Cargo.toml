@@ -8,6 +8,7 @@ default = ["std"]
 std = []
 
 [dependencies]
+libm = "0.2"
 
 [dev-dependencies]
 nalgebra = "0.33"

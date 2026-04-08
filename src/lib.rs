@@ -1,5 +1,7 @@
-// #![no_std]
+#![no_std]
 extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 use core::{
     fmt,
@@ -50,3 +52,20 @@ impl fmt::Display for Error {
 }
 
 pub type Result<T> = result::Result<T, Error>;
+
+/// Returns a non-deterministic seed derived from the system clock.
+///
+/// Only available with the `std` feature (enabled by default).
+/// Pass the result directly to `forecast`, `forecast_mean`, or `forecast_quantiles`.
+///
+/// ```rust,no_run
+/// let y = vec![1.0f64; 24];
+/// let fc = flair::forecast_mean(&y, 12, "M", 100, flair::seed_from_time());
+/// ```
+#[cfg(feature = "std")]
+pub fn seed_from_time() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs().wrapping_mul(0x9e3779b97f4a7c15))
+        .unwrap_or(0xdeadbeefcafe1234)
+}
