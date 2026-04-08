@@ -38,7 +38,7 @@ pub fn full(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>)> 
     if a.is_empty() {
         return Err(Error::InvalidInput("empty matrix"));
     }
-    let m = a.len();
+    let _m = a.len();
     let n = a[0].len();
 
     if n == 0 {
@@ -111,8 +111,6 @@ fn transpose(a: &Vec<Vec<f64>>) -> Vec<Vec<f64>> {
 
 /// Internal state for bidiagonalization
 struct BidigState {
-    /// Bidiagonal matrix (in-place modified from A)
-    b: Vec<Vec<f64>>,
     /// Left singular vectors (m × m)
     u: Vec<Vec<f64>>,
     /// Right singular vectors (n × n)
@@ -157,7 +155,7 @@ fn gebrd(a: &mut Vec<Vec<f64>>) -> Result<BidigState> {
         v[i][i] = 1.0;
     }
 
-    let mut d = vec![0.0; (m.min(n))];
+    let mut d = vec![0.0; m.min(n)];
     let mut e = vec![0.0; (m.min(n) - 1).max(0)];
 
     // Householder bidiagonalization
@@ -193,7 +191,7 @@ fn gebrd(a: &mut Vec<Vec<f64>>) -> Result<BidigState> {
         }
     }
 
-    Ok(BidigState { b: a.clone(), u, v, d, e })
+    Ok(BidigState { u, v, d, e })
 }
 
 /// Compute Householder reflector for vector x.
