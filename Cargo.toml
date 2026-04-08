@@ -3,12 +3,13 @@ name    = "flair"
 version = "0.1.0"
 edition = "2024"
 
-# nalgebra is used ONLY in two thin wrappers inside src/flair.rs:
-#   svd_thin()      – full thin SVD for Ridge regression
-#   svd_singvals()  – singular values for period-selection BIC
-# Replacing those two functions with a pure-std Jacobi SVD removes this dep.
+[features]
+default = ["std"]
+std = []
 
 [dependencies]
+
+[dev-dependencies]
 nalgebra = "0.33"
 
 [lib]

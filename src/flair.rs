@@ -1,19 +1,24 @@
 //! FLAIR: Factored Level And Interleaved Ridge
 //! Rust port of <https://github.com/TakatoHonda/FLAIR>
 //!
-//! ## nalgebra dependency scope
-//!
-//! nalgebra is used **only** in two thin wrappers:
-//!   - []     – full thin SVD (U, s, Vt) used in Ridge regression
-//!   - [] – singular values only, used in period-selection BIC
-//!
-//! Every other line of this file is pure .
-//! To remove nalgebra: replace those two functions with a Jacobi SVD
-//! implementation (~150 lines of pure arithmetic).
-
 #![allow(clippy::many_single_char_names, clippy::too_many_arguments)]
 
-use nalgebra::{DMatrix, DVector};
+use core::{
+    cmp::Ordering,
+    f64::consts::PI,
+};
+use alloc::{
+    collections::BTreeSet,
+    format,
+    string::String,
+    vec,
+    vec::Vec,
+};
+#[cfg(all(test, feature = "std"))]
+use std::fs;
+#[cfg(feature = "std")]
+use std::time::{SystemTime, UNIX_EPOCH};
+use crate::svd;
 
 // ── constants ──────────────────────────────────────────────────────────────
 
@@ -58,7 +63,7 @@ impl Rng {
     fn normal(&mut self) -> f64 {
         let u1 = self.next_f64().max(1e-300);
         let u2 = self.next_f64();
-        (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
     }
 }
 
@@ -113,21 +118,6 @@ fn bc_inv(z: &[f64], lam: f64) -> Vec<f64> {
     }).collect()
 }
 
-// ── SVD wrappers (nalgebra) – THE ONLY NALGEBRA USAGE ─────────────────────
-//
-// To replace nalgebra: implement Jacobi one-sided SVD and swap these two fns.
-
-/// Thin SVD: X = U Σ Vt.  Returns (U [m×k], s [k], Vt [k×n]).
-fn svd_thin(x: &DMatrix<f64>) -> (DMatrix<f64>, DVector<f64>, DMatrix<f64>) {
-    let svd = nalgebra::linalg::SVD::new(x.clone(), true, true);
-    (svd.u.expect("U"), svd.singular_values, svd.v_t.expect("Vt"))
-}
-
-/// Singular values only (no U / Vt computed).
-fn svd_singvals(x: &DMatrix<f64>) -> DVector<f64> {
-    nalgebra::linalg::SVD::new(x.clone(), false, false).singular_values
-}
-
 // ── helpers ────────────────────────────────────────────────────────────────
 
 fn logspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
@@ -137,7 +127,7 @@ fn logspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
 fn slice_mean(v: &[f64]) -> f64 { v.iter().sum::<f64>() / v.len() as f64 }
 
 fn median_f64(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
     let n = v.len();
     if n % 2 == 0 { (v[n / 2 - 1] + v[n / 2]) / 2.0 } else { v[n / 2] }
 }
@@ -151,14 +141,12 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
     let m = x_rows.len();
     let nf = x_rows[0].len();
 
-    // Build nalgebra DMatrix from row slices
-    let x_mat = DMatrix::from_fn(m, nf, |r, c| x_rows[r][c]);
-    let (u, s, vt) = svd_thin(&x_mat);
+    let (u, s, vt) = svd::full(x_rows).unwrap_or_default();
     let k = s.len();
 
     let s2: Vec<f64> = s.iter().map(|&v| v * v).collect();
     // Uty[j] = sum_i u[i,j] * y[i]
-    let uty: Vec<f64> = (0..k).map(|j| (0..m).map(|i| u[(i, j)] * y[i]).sum()).collect();
+    let uty: Vec<f64> = (0..k).map(|j| (0..m).map(|i| u[i][j] * y[i]).sum()).collect();
 
     let alphas = logspace(ALPHA_LOG_MIN, ALPHA_LOG_MAX, N_ALPHAS);
 
@@ -167,10 +155,10 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
     for (ai, &a) in alphas.iter().enumerate() {
         let d: Vec<f64> = s2.iter().map(|&v| v / (v + a)).collect();
         // hat-matrix diagonal: h[i] = sum_j u[i,j]^2 * d[j]
-        let h: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[(i,j)].powi(2) * d[j]).sum()).collect();
+        let h: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[i][j].powi(2) * d[j]).sum()).collect();
         // residual: r = y - U*(d*Uty)
         let r: Vec<f64> = (0..m).map(|i| {
-            y[i] - (0..k).map(|j| u[(i,j)] * d[j] * uty[j]).sum::<f64>()
+            y[i] - (0..k).map(|j| u[i][j] * d[j] * uty[j]).sum::<f64>()
         }).collect();
         gcv[ai] = r.iter().zip(h.iter())
             .map(|(&ri, &hi)| (ri / (1.0 - hi).max(EPS)).powi(2))
@@ -195,7 +183,7 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
         let dvs: Vec<f64> = (0..k).map(|j| d[j] * uty[j] / s[j].max(EPS)).collect();
         // beta += wi * Vt^T * dvs  (vt is k×nf)
         for col in 0..nf {
-            beta[col] += wi * (0..k).map(|j| vt[(j, col)] * dvs[j]).sum::<f64>();
+            beta[col] += wi * (0..k).map(|j| vt[j][col] * dvs[j]).sum::<f64>();
         }
         for j in 0..k { d_avg[j] += wi * d[j]; }
     }
@@ -204,7 +192,7 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
     let residuals: Vec<f64> = (0..m).map(|i| {
         y[i] - x_rows[i].iter().zip(beta.iter()).map(|(&xi, &bi)| xi * bi).sum::<f64>()
     }).collect();
-    let h_avg: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[(i,j)].powi(2) * d_avg[j]).sum()).collect();
+    let h_avg: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[i][j].powi(2) * d_avg[j]).sum()).collect();
     let loo: Vec<f64> = residuals.iter().zip(h_avg.iter())
         .map(|(&ri, &hi)| ri / (1.0 - hi).max(EPS))
         .collect();
@@ -292,8 +280,8 @@ fn select_period(y: &[f64], n: usize, freq: &str) -> (usize, Vec<usize>, usize, 
             let start = y_sel.len() - nc * p_cand;
             let y_use = &y_sel[start..];
             // mat_c[ph, ci] = y_use[ci * p_cand + ph]  (shape: p_cand × nc)
-            let mat_c = DMatrix::from_fn(p_cand, nc, |ph, ci| y_use[ci * p_cand + ph]);
-            let s = svd_singvals(&mat_c);
+            let mat_c: Vec<Vec<f64>> = (0..p_cand).map(|ph| (0..nc).map(|ci| y_use[ci * p_cand + ph]).collect()).collect();
+            let s = svd::singvals(&mat_c);
             let rss1: f64 = s.iter().skip(1).map(|&v| v * v).sum();
             let t = (nc * p_cand) as f64;
             let bic = t * (rss1 / t).max(EPS_LOG).ln() + (p_cand + nc - 1) as f64 * t.ln();
@@ -322,8 +310,8 @@ fn compute_shape2(l: &[f64], cp: usize, n_complete: usize) -> Option<Vec<f64>> {
     s2_raw.iter_mut().for_each(|v| *v /= raw_mean);
 
     // First-harmonic prior
-    let cos_b: Vec<f64> = (0..cp).map(|i| (2.0 * std::f64::consts::PI * i as f64 / cp as f64).cos()).collect();
-    let sin_b: Vec<f64> = (0..cp).map(|i| (2.0 * std::f64::consts::PI * i as f64 / cp as f64).sin()).collect();
+    let cos_b: Vec<f64> = (0..cp).map(|i| (2.0 * PI * i as f64 / cp as f64).cos()).collect();
+    let sin_b: Vec<f64> = (0..cp).map(|i| (2.0 * PI * i as f64 / cp as f64).sin()).collect();
     let s2_c: Vec<f64> = s2_raw.iter().map(|&v| v - 1.0).collect();
     let a = 2.0 * slice_mean(&s2_c.iter().zip(cos_b.iter()).map(|(&sc, &cb)| sc * cb).collect::<Vec<_>>());
     let b = 2.0 * slice_mean(&s2_c.iter().zip(sin_b.iter()).map(|(&sc, &sb)| sc * sb).collect::<Vec<_>>());
@@ -441,8 +429,8 @@ fn estimate_gamma(mat: &[Vec<f64>], big_p: usize, n_complete: usize) -> f64 {
     if big_p < 2 || n_complete < MIN_COMPLETE {
         return 1.0;
     }
-    let x = DMatrix::from_fn(big_p, n_complete, |r, c| mat[r][c]);
-    let s = svd_singvals(&x);
+    let x: Vec<Vec<f64>> = (0..big_p).map(|r| (0..n_complete).map(|c| mat[r][c]).collect()).collect();
+    let s = svd::singvals(&x);
     let total: f64 = s.iter().map(|&v| v * v).sum();
     if total < EPS_LOG {
         return 1.0;
@@ -475,7 +463,7 @@ fn compute_cross_periods(
     period: usize,
     n_complete: usize,
 ) -> (Vec<usize>, usize) {
-    let mut cp_set: std::collections::BTreeSet<usize> = secondary.iter().filter_map(|&sp| {
+    let mut cp_set: BTreeSet<usize> = secondary.iter().filter_map(|&sp| {
         let cp = if big_p >= 2 { sp / big_p } else { sp };
         if cp >= 2 && cp <= n_complete / 2 { Some(cp) } else { None }
     }).collect();
@@ -511,10 +499,15 @@ pub fn forecast(
     if y_raw.is_empty() { return Err("y must not be empty".into()); }
 
     let mut rng = Rng::new(seed.unwrap_or_else(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs().wrapping_mul(0x9e3779b97f4a7c15)))
-            .unwrap_or(0xdeadbeefcafe1234)
+        #[cfg(feature = "std")]
+        {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as u64 ^ (d.as_secs().wrapping_mul(0x9e3779b97f4a7c15)))
+                .unwrap_or(0xdeadbeefcafe1234)
+        }
+        #[cfg(not(feature = "std"))]
+        { 0xdeadbeefcafe1234 }
     }));
 
     // NaN-to-zero + shift so all values >= 1
@@ -722,7 +715,7 @@ pub fn forecast_quantiles(
     Ok(quantiles.iter().map(|&q| {
         (0..horizon).map(|h| {
             let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
-            col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
             let idx = (q * (ns - 1) as f64).round() as usize;
             col[idx]
         }).collect()
@@ -803,8 +796,8 @@ pub fn confidence(y_raw: &[f64], freq: &str) -> Confidence {
 
     let usable = n_complete * big_p;
     let y_trim = &y[n - usable..];
-    let mat_dm = DMatrix::from_fn(big_p, n_complete, |ph, ci| y_trim[ci * big_p + ph]);
-    let s = svd_singvals(&mat_dm);
+    let mat_dm: Vec<Vec<f64>> = (0..big_p).map(|ph| (0..n_complete).map(|ci| y_trim[ci * big_p + ph]).collect()).collect();
+    let s = svd::singvals(&mat_dm);
     let total: f64 = s.iter().map(|&v| v * v).sum();
 
     let (rank1, gamma) = if total < EPS {
@@ -962,7 +955,7 @@ mod tests {
 
     fn load(ds: &Dataset) -> Vec<f64> {
         let path = format!("examples/dataset/{}", ds.file);
-        let content = std::fs::read_to_string(&path)
+        let content = fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("{path} not found"));
         match ds.mode {
             ParseMode::Col(col) | ParseMode::ColSkip(col, _) => {
