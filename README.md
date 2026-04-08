@@ -1,6 +1,6 @@
 # flair
 
-This is a Rust implement of time series forecasting method FLAIR by Takato Honda.
+Rust implement of time series forecasting FLAIR by Takato Honda
 
 ## Version
 
@@ -100,6 +100,8 @@ Same seed → bit-identical output. Different seeds → different output.
 
 - https://github.com/TakatoHonda/FLAIR
 - https://zenn.dev/t_honda/articles/flair-time-series-forecasting
+- https://www.netlib.org/lapack/explore-html/d8/d2d/dgesvd_8f.html
+- https://github.com/Reference-LAPACK/lapack/blob/master/SRC/dgesvd.f
 
 ## Lisence
 
