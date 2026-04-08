@@ -1,5 +1,5 @@
 [package]
-name        = "flair"
+name        = "flair-rs"
 version     = "0.1.0"
 edition     = "2024"
 description = "Rust port of FLAIR (Factored Level And Interleaved Ridge) — lightweight time series forecasting, no_std/wasm32 compatible"
