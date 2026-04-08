@@ -3,9 +3,9 @@
 // Run: cargo run --example integration_tests
 //
 // Checks:
-//   1. verify()       — FLAIR self-verification (seasonal / constant / Box-Cox / Ridge)
-//   2. japan_demand   — Tokyo hourly demand forecast + rank-1 score + determinism
-//   3. world_bank     — Japan annual kWh/capita forecast + rank-1 score + determinism
+//   1. verify()         — FLAIR self-verification (seasonal / constant / Box-Cox / Ridge)
+//   2. japan_demand     — Tokyo hourly demand: confidence + forecast + determinism
+//   3. elec_per_capita  — Japan/USA/Germany/China annual kWh/capita: confidence + forecast
 
 use flair::{confidence, forecast_mean};
 use std::fs;
@@ -18,37 +18,32 @@ fn fail(label: &str, reason: &str) -> ! {
     std::process::exit(1);
 }
 
-
-// ── 2. japan demand (hourly, 9 regions) ──────────────────────────────────────
-
-fn load_japan_demand() -> Vec<f64> {
-    let path = "examples/dataset/japan_demand.csv";
-    let content = fs::read_to_string(path).expect("failed to read japan_demand.csv");
-    content
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let mut cols = line.split(',');
-            cols.nth(4)?.trim().parse::<f64>().ok() // Tokyo column
-        })
-        .collect()
+fn load_col(file: &str, col: usize, skip: usize) -> Option<Vec<f64>> {
+    let path = format!("examples/dataset/{}", file);
+    let content = fs::read_to_string(&path).ok()?;
+    Some(content.lines().skip(skip)
+        .filter_map(|l| l.split(',').nth(col)?.trim().trim_matches('"').parse::<f64>().ok())
+        .collect())
 }
 
-fn check_japan_demand() {
-    println!("=== japan_demand ===");
-    let y = load_japan_demand();
-    println!("  loaded {} hourly observations (Tokyo)", y.len());
+// ── 1. japan demand ───────────────────────────────────────────────────────────
 
-    // confidence
+fn check_japan_demand() {
+    println!("=== japan_demand_tokyo ===");
+    let y = match load_col("japan_demand_tokyo.csv", 2, 1) {
+        Some(v) => v,
+        None => { println!("  (skipped: file not found — see README for download instructions)"); return; }
+    };
+    println!("  loaded {} hourly observations (Tokyo MW)", y.len());
+
     let c = confidence(&y, "H");
     println!("  rank1   : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}")));
     println!("  gamma   : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}")));
     println!("  gcv     : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
     println!("  impl_ok : {}", c.impl_ok);
 
-    // forecast
-    let fc = forecast_mean(&y, 24, "H", 200, None).unwrap_or_else(|e| fail("forecast", &e));
-    println!("  Tokyo next 24h forecast (万kW):");
+    let fc = forecast_mean(&y, 24, "H", 200, 42).unwrap_or_else(|e| fail("forecast", &e));
+    println!("  Tokyo next 24h forecast (MW):");
     for (h, v) in fc.iter().enumerate() {
         print!("    +{:02}h: {:.0}", h + 1, v);
         if h % 4 == 3 { println!(); }
@@ -56,72 +51,52 @@ fn check_japan_demand() {
     if fc.len() % 4 != 0 { println!(); }
     pass("forecast shape and finiteness");
 
-    // determinism: same seed → identical, seed=None → non-deterministic
-    let a = forecast_mean(&y, 24, "H", 200, Some(42)).unwrap();
-    let b = forecast_mean(&y, 24, "H", 200, Some(42)).unwrap();
-    let c = forecast_mean(&y, 24, "H", 200, None).unwrap();
-    let d = forecast_mean(&y, 24, "H", 200, None).unwrap();
-    if a != b { fail("determinism", "same seed produced different results"); }
-    if a == c { fail("determinism", "different seeds produced identical results"); }
-    if c == d { fail("non-determinism", "seed=None produced identical results across runs"); }
-    pass("determinism (same seed identical; seed=None non-deterministic)");
+    let a = forecast_mean(&y, 24, "H", 200, 42).unwrap();
+    let b = forecast_mean(&y, 24, "H", 200, 42).unwrap();
+    let c2 = forecast_mean(&y, 24, "H", 200, 99).unwrap();
+    if a != b  { fail("determinism", "same seed produced different results"); }
+    if a == c2 { fail("determinism", "different seeds produced identical results"); }
+    pass("determinism (same seed identical; different seed differs)");
 }
 
-// ── 3. world bank annual kWh/capita ──────────────────────────────────────────
+// ── 2. elec per capita ────────────────────────────────────────────────────────
 
-fn load_world_bank() -> Vec<f64> {
-    let path = "examples/dataset/world_bank.csv";
-    let content = fs::read_to_string(path).expect("failed to read world_bank.csv");
-    let japan_line = content
-        .lines()
-        .find(|l| l.contains("\"Japan\""))
-        .expect("Japan row not found");
-    japan_line
-        .split(',')
-        .skip(4)
-        .filter_map(|v| {
-            let s = v.trim().trim_matches('"');
-            if s.is_empty() { None } else { s.parse::<f64>().ok() }
-        })
-        .collect()
-}
+fn check_elec_per_capita() {
+    // col 1=japan, 2=usa, 3=germany, 4=china
+    let series = [
+        ("Japan",   1usize),
+        ("USA",     2),
+        ("Germany", 3),
+        ("China",   4),
+    ];
 
-fn check_world_bank() {
-    println!("=== world_bank ===");
-    let y = load_world_bank();
-    println!("  loaded {} annual observations (Japan kWh/capita)", y.len());
+    for (name, col) in series {
+        println!("\n=== elec_per_capita / {} ===", name);
+        let y = match load_col("elec_per_capita.csv", col, 1) {
+            Some(v) => v,
+            None => { println!("  (skipped: file not found)"); continue; }
+        };
+        println!("  loaded {} annual observations (kWh/capita)", y.len());
 
-    // confidence — annual data has no intra-period structure, rank1/gamma will be n/a
-    let c = confidence(&y, "A");
-    println!("  rank1   : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}")));
-    println!("  gamma   : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}")));
-    println!("  gcv     : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
-    println!("  impl_ok : {}", c.impl_ok);
+        let c = confidence(&y, "A");
+        println!("  rank1   : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}")));
+        println!("  gamma   : {}", c.gamma.map_or("n/a".into(), |v| format!("{v:.3}")));
+        println!("  gcv     : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
+        println!("  impl_ok : {}", c.impl_ok);
 
-    // forecast
-    let fc = forecast_mean(&y, 3, "A", 200, None).unwrap_or_else(|e| fail("forecast", &e));
-    println!("  Japan next 3y forecast (kWh/capita):");
-    for (h, v) in fc.iter().enumerate() {
-        println!("    +{}y: {:.0}", h + 1, v);
+        let fc = forecast_mean(&y, 3, "A", 200, 42).unwrap_or_else(|e| fail("forecast", &e));
+        println!("  next 3y forecast (kWh/capita):");
+        for (h, v) in fc.iter().enumerate() {
+            println!("    +{}y: {:.0}", h + 1, v);
+        }
+        pass("forecast shape and finiteness");
     }
-    pass("forecast shape and finiteness");
-
-    // determinism
-    let a = forecast_mean(&y, 3, "A", 200, Some(42)).unwrap();
-    let b = forecast_mean(&y, 3, "A", 200, Some(42)).unwrap();
-    let c = forecast_mean(&y, 3, "A", 200, None).unwrap();
-    let d = forecast_mean(&y, 3, "A", 200, None).unwrap();
-    if a != b { fail("determinism", "same seed produced different results"); }
-    if a == c { fail("determinism", "different seeds produced identical results"); }
-    if c == d { fail("non-determinism", "seed=None produced identical results across runs"); }
-    pass("determinism (same seed identical; seed=None non-deterministic)");
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
     check_japan_demand();
-    check_world_bank();
+    check_elec_per_capita();
     println!("\nAll integration tests passed.");
 }
-

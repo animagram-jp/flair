@@ -14,6 +14,7 @@ use alloc::{
     vec::Vec,
 };
 use crate::SvdError as Error;
+use libm::{sqrt, pow};
 
 type Result<T> = core::result::Result<T, Error>;
 
@@ -208,7 +209,7 @@ fn householder_vector(x: &[f64]) -> (Vec<f64>, f64, f64) {
         return (vec![], 0.0, 0.0);
     }
 
-    let norm_x = x.iter().map(|v| v * v).sum::<f64>().sqrt();
+    let norm_x = sqrt(x.iter().map(|v| v * v).sum::<f64>());
 
     if norm_x == 0.0 {
         return (x.to_vec(), 0.0, 0.0);
@@ -444,12 +445,12 @@ fn compute_qr_shift(d: &[f64], e: &[f64], q: usize, p: usize) -> f64 {
     let det = a * c - b * b;
 
     // Eigenvalues of 2x2 block
-    let discriminant = (trace / 2.0).powi(2) - det;
+    let discriminant = pow(trace / 2.0, 2.0) - det;
     if discriminant < 0.0 {
         return trace / 2.0;
     }
 
-    let sqrt_disc = discriminant.sqrt();
+    let sqrt_disc = sqrt(discriminant);
     let ev1 = trace / 2.0 + sqrt_disc;
     let ev2 = trace / 2.0 - sqrt_disc;
 
@@ -502,7 +503,7 @@ fn givens_params(a: f64, b: f64) -> (f64, f64) {
         return (0.0, -b.abs() / b);
     }
 
-    let r = (a * a + b * b).sqrt();
+    let r = sqrt(a * a + b * b);
 
     let c = a / r;
     let s = b / r;
@@ -515,6 +516,8 @@ fn givens_params(a: f64, b: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate std;
+    use std::println;
 
     #[test]
     fn test_gebrd_simple_matrix() {
@@ -595,7 +598,7 @@ mod tests {
         assert!(tau >= 0.0 && tau <= 2.0);
 
         // beta should be the norm of x with appropriate sign
-        let norm_x = (x.iter().map(|v| v * v).sum::<f64>()).sqrt();
+        let norm_x = sqrt(x.iter().map(|v| v * v).sum::<f64>());
         assert!((beta.abs() - norm_x).abs() < 1e-10);
     }
 

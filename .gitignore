@@ -1,3 +1,4 @@
 **/target/**
 **.lock
 CLAUDE.md
+examples/dataset/japan_demand_tokyo.csv
