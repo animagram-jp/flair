@@ -6,7 +6,7 @@ Rust implement of time series forecasting FLAIR by Takato Honda
 
 | Version | Status    | Date      | Description |
 |---------|-----------|-----------|-------------|
-| 0.1.0   | Scheduled | 2026-4-12 | initial     |
+| 0.1.0   | Released  | 2026-4-09 | initial     |
 
 ## Provided Functions
 
@@ -125,7 +125,7 @@ For non-deterministic output, pass `flair::seed_from_time()` (requires `std` fea
 
 ⚠️ `japan_demand_tokyo.csv` is not included in this repository. To use it, download the demand CSV from [japanesepower.org](https://japanesepower.org/), extract the Tokyo column, and place it at `examples/dataset/japan_demand_tokyo.csv`.
 
-## Lisence
+## License
 
 ```
 Apache-2.0

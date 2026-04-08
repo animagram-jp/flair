@@ -1,7 +1,12 @@
 [package]
-name    = "flair"
-version = "0.1.0"
-edition = "2024"
+name        = "flair"
+version     = "0.1.0"
+edition     = "2024"
+description = "Rust port of FLAIR (Factored Level And Interleaved Ridge) — lightweight time series forecasting, no_std/wasm32 compatible"
+license     = "Apache-2.0"
+repository  = "https://github.com/animagram-jp/flair"
+keywords    = ["forecasting", "time-series", "wasm", "no-std", "statistics"]
+categories  = ["science", "no-std", "wasm"]
 
 [features]
 default = ["std"]
