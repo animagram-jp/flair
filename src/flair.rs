@@ -830,11 +830,10 @@ mod tests {
     // ParseMode:
     //   Col(n)      – take the n-th comma-separated column (0-based), skip 1 header row
     //   ColSkip(n,s)– same but skip s header rows
-    //   JapanTokyo  – japan_demand.csv: col 4 (Tokyo), skip 1 header row
-    //   WorldBank   – world_bank.csv: find "Japan" row, extract numeric cols
+    //   JapanTokyo  – japan_demand_tokyo.csv: col 4 (Tokyo), skip 1 header row
 
     #[allow(dead_code)]
-    enum ParseMode { Col(usize), ColSkip(usize, usize), JapanTokyo, WorldBank }
+    enum ParseMode { Col(usize), ColSkip(usize, usize), JapanTokyo }
 
     struct Dataset {
         file: &'static str,
@@ -855,18 +854,7 @@ mod tests {
             }
             ParseMode::JapanTokyo => {
                 content.lines().skip(1)
-                    .filter_map(|l| l.split(',').nth(4)?.trim().parse::<f64>().ok())
-                    .collect()
-            }
-            ParseMode::WorldBank => {
-                let line = content.lines()
-                    .find(|l| l.contains("\"Japan\""))
-                    .expect("Japan row not found in world_bank.csv");
-                line.split(',').skip(4)
-                    .filter_map(|v| {
-                        let s = v.trim().trim_matches('"');
-                        if s.is_empty() { None } else { s.parse::<f64>().ok() }
-                    })
+                    .filter_map(|l| l.split(',').nth(2)?.trim().parse::<f64>().ok())
                     .collect()
             }
         }
@@ -879,8 +867,7 @@ mod tests {
             Dataset { file: "sunspot_year.csv",     frequency: Freq::Yearly,   mode: ParseMode::Col(2) },
             Dataset { file: "noaa_temp_annual.csv", frequency: Freq::Yearly,   mode: ParseMode::Col(1) },
             Dataset { file: "noaa_temp_monthly.csv",frequency: Freq::Monthly,  mode: ParseMode::Col(1) },
-            Dataset { file: "world_bank.csv",       frequency: Freq::Yearly,   mode: ParseMode::WorldBank },
-            Dataset { file: "japan_demand.csv",     frequency: Freq::Hourly(1),mode: ParseMode::JapanTokyo },
+            Dataset { file: "japan_demand_tokyo.csv", frequency: Freq::Hourly(1),mode: ParseMode::JapanTokyo },
         ]
     }
 
