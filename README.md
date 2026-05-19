@@ -21,23 +21,42 @@ Rust implement of time series forecasting FLAIR by Takato Honda
 
 **Common arguments**
 
-- **`y: &[f64]`** — Observed values as a flat, equally-spaced 1-D array. No timestamps; the interval is given separately via `freq`. NaN is treated as 0.0.
-- **`frequency: &str`** — Observation interval: `"H"` (hourly), `"D"` (daily), `"W"` (weekly), `"M"` (monthly), `"Q"` (quarterly), `"A"` / `"Y"` (annual), etc.
+- **`y: &[f64]`** — Observed values as a flat, equally-spaced 1-D array. No timestamps; the interval is given separately via `freq`.
+- **`freq: &Freq`** — Observation interval enum. Construct via `Freq::hourly(1)`, `Freq::Daily`, `Freq::Monthly`, etc.
+- **`horizon: usize`** — Number of steps ahead to forecast.
+- **`n_samples: usize`** — Number of Monte-Carlo sample paths (accuracy vs. speed trade-off).
+- **`seed: u64`** — RNG seed for reproducibility. Pass `seed_from_time()` for non-deterministic output.
+- **`covariates: Option<(&[f64], &[f64])>`** — Optional exogenous variables `(x_historical, x_future)` in row-major layout. `x_historical` length must be a multiple of `y.len()`; `x_future` length must equal `horizon * k` where `k` is the number of covariate columns.
 
 | Fn | Input | Output | Description |
-|---------|----|-------|--------|-------------|
-| `forecast` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<Vec<f64>>>` `[n_samples][horizon]` | Generates Monte-Carlo sample paths. Each row is one forecast path. Use when the full uncertainty distribution is needed. |
-| `forecast_mean` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<f64>>` `[horizon]` | Returns the mean over all sample paths as a single point forecast. The simplest option for a single-line prediction. |
-| `forecast_quantiles` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64`, `quantiles: &[f64]` | `Result<Vec<Vec<f64>>>` `[quantile][horizon]` | Aggregates sample paths into quantiles. Pass e.g. `&[0.1, 0.5, 0.9]` to get pessimistic / median / optimistic forecast bands. |
-| `seed_from_time` *(std only)* | — | `u64` | Returns a non-deterministic seed from the system clock. Pass to any forecast function when reproducibility is not needed. |
+|----|-------|--------|-------------|
+| `forecast` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<Vec<f64>>, Confidence)>` `[n_samples][horizon]` | Generates Monte-Carlo sample paths. Each row is one forecast path. Use when the full uncertainty distribution is needed. |
+| `forecast_mean` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<f64>, Confidence)>` `[horizon]` | Returns the mean over all sample paths as a single point forecast. |
+| `forecast_quantiles` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates`, `quantiles: &[f64]` | `Result<(Vec<Vec<f64>>, Confidence)>` `[quantile][horizon]` | Aggregates sample paths into quantiles. Pass e.g. `&[0.1, 0.5, 0.9]` to get pessimistic / median / optimistic forecast bands. |
+| `seed_from_time` *(std only)* | — | `u64` | Returns a non-deterministic seed from the system clock. |
+
+### Freq
+
+```rust
+Freq::Secondly(10)
+Freq::Minutely(5 | 10 | 15 | 30)
+Freq::Hourly(1 | 12)
+Freq::Daily
+Freq::Weekly
+Freq::Monthly
+Freq::Quarterly
+Freq::Yearly
+```
+
+Variants with an interval argument are constructed via fallible constructors (`Freq::hourly(n) -> Result<Freq, Error>`) that reject invalid values.
 
 ### Confidence
 
-| field | description |
-|---|---|
-| `rank1` | `s[0]²/Σs²` of seasonal matrix. 1.0 = pure rank-1 seasonality. `n/a` when period=1 (e.g. annual) or series too short — not an error |
-| `gamma` | seasonal strength above random-matrix baseline, [0, 1]. 1.0 = strong clean seasonality |
-| `gcv` | Ridge LOO error on Level series. lower = Level more predictable. scale depends on Box-Cox transform |
+| field | type | description |
+|-------|------|-------------|
+| `rank1` | `Option<f64>` | `s[0]²/Σs²` of seasonal matrix. 1.0 = pure rank-1 seasonality. `None` when period=1 (e.g. Yearly) or series too short. |
+| `gamma` | `Option<f64>` | Seasonal strength above random-matrix baseline, [0, 1]. 1.0 = strong clean seasonality. |
+| `gcv` | `Option<f64>` | Ridge LOO error on Level series. Lower = Level more predictable. Scale depends on Box-Cox transform. |
 
 ## Performance
 
@@ -60,23 +79,6 @@ Run: `cargo run --example forecast_validation --release`
 | elec_china | A | 34 | 5 | n/a | n/a | 466.77 | 549.63 | 8.75% | 3.26 |
 
 rank1/gamma: `n/a` = annual series (period=1, no intra-period structure); `—` = not computed for this run.
-
-
-```
-# Confidence
-
-# japan_demand_tokyo (hourly, strong seasonality)
-rank1   : 0.996   ← near-perfect rank-1 fit
-gamma   : 0.996   ← strong seasonal structure
-gcv     : 0.0044  ← Level highly predictable
-
-elec_per_capita (annual, no intra-period structure):
-            rank1   gamma   gcv
-Japan      n/a     n/a     41186
-USA        n/a     n/a     82624
-Germany    n/a     n/a     27033
-China      n/a     n/a      9059
-```
 
 ## Datasets
 
@@ -107,21 +109,27 @@ Author: Andyou <andyou@animagram.jp>
 
 ### 共通引数
 
-- **`y: &[f64]`** — 時系列の観測値のみを等間隔で並べた1次元配列。日時情報は含まない。間隔は `freq` で別途指定する。NaN は 0.0 として扱われる。
-- **`frequency: &str`** — 観測間隔を表す文字列。`"H"`（時次）・`"D"`（日次）・`"W"`（週次）・`"M"`（月次）・`"Q"`（四半期）・`"A"` / `"Y"`（年次）など。
+- **`y: &[f64]`** — 時系列の観測値のみを等間隔で並べた1次元配列。日時情報は含まない。間隔は `freq` で別途指定する。
+- **`freq: &Freq`** — 観測間隔を表すenum。`Freq::hourly(1)`・`Freq::Daily`・`Freq::Monthly` などで構築する。
+- **`horizon: usize`** — 何ステップ先まで予測するか。
+- **`n_samples: usize`** — モンテカルロサンプルパス本数（精度と速度のトレードオフ）。
+- **`seed: u64`** — 乱数シード（再現性のため）。非決定的な出力が必要な場合は `seed_from_time()` を渡す。
+- **`covariates: Option<(&[f64], &[f64])>`** — 外生変数 `(x_historical, x_future)` をrow-majorで渡すオプション。`x_historical` の長さは `y.len()` の倍数、`x_future` の長さは `horizon * k`（k=列数）でなければならない。
 
 ### 提供ポート
 
 | Fn | Input | Output | Description |
 |----|-------|--------|-------------|
-| `forecast` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<Vec<f64>>>` `[n_samples][horizon]` | モンテカルロサンプルパスを生成する。各行が1本の予測パス。|
-| `forecast_mean` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<f64>>` `[horizon]` | サンプルパスを平均した点予測を返す。最もシンプルな予測用途向け。 |
-| `forecast_quantiles` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64`, `quantiles: &[f64]` | `Result<Vec<Vec<f64>>>` `[quantile][horizon]` | サンプルパスから指定パーセンタイルを集計する。`&[0.1, 0.5, 0.9]` を渡すと悲観・中央値・楽観の予測帯域を得られる。 |
+| `forecast` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<Vec<f64>>, Confidence)>` `[n_samples][horizon]` | モンテカルロサンプルパスを生成する。各行が1本の予測パス。|
+| `forecast_mean` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<f64>, Confidence)>` `[horizon]` | サンプルパスを平均した点予測を返す。最もシンプルな予測用途向け。 |
+| `forecast_quantiles` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates`, `quantiles: &[f64]` | `Result<(Vec<Vec<f64>>, Confidence)>` `[quantile][horizon]` | サンプルパスから指定パーセンタイルを集計する。`&[0.1, 0.5, 0.9]` を渡すと悲観・中央値・楽観の予測帯域を得られる。 |
 | `seed_from_time` *（std のみ）* | — | `u64` | システム時刻からシードを生成する。再現性が不要な場合に各予測関数へ渡す。 |
 
-### 予測信頼性(Confidence)
+### 予測信頼性 (Confidence)
 
-- `rank1`（季節性の強さ）
-- `gamma`（季節構造の純粋さ）
-- `gcv`（レベル系列の予測しやすさ）
+| フィールド | 型 | 説明 |
+|-----------|-----|------|
+| `rank1` | `Option<f64>` | 季節行列の `s[0]²/Σs²`。1.0 = 完全な単一周期性。`None` は period=1（Yearly 等）または系列が短い場合（エラーではない）。 |
+| `gamma` | `Option<f64>` | ランダム行列ベースライン除去後の季節強度。[0, 1]。1.0 = 強い季節性。 |
+| `gcv` | `Option<f64>` | RidgeのLOOCV最小誤差。低いほどLevelが予測しやすい。スケールはBox-Cox変換依存。 |
 

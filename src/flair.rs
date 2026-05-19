@@ -16,7 +16,7 @@ use alloc::{
     vec::Vec,
 };
 use libm::{sqrt, log as ln, exp, pow, sin, cos, round};
-use crate::{svd, Flair, Freq};
+use crate::{svd, Confidence, Error, Flair, Freq};
 
 // ============================================================
 // Implement
@@ -45,7 +45,7 @@ impl Freq {
 
 struct FlairStruct;
 
-impl Falir for FlairStruct {
+impl Flair for FlairStruct {
     fn forecast(
         y: &[f64],
         frequency: &Freq,
@@ -69,7 +69,7 @@ impl Falir for FlairStruct {
                 return Err(Error::InvalidInput("x_future length must equal horizon * k"));
             }
         }
-        todo!()
+        forecast(y, horizon, frequency, n_samples, seed)
     }
 
     fn forecast_mean(
@@ -80,7 +80,7 @@ impl Falir for FlairStruct {
         seed: u64,
         covariates: Option<(&[f64], &[f64])>,
     ) -> Result<(Vec<f64>, Confidence), Error>{
-        let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates)?;
+        let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
         let mean = (0..horizon)
             .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n_samples as f64)
             .collect();
@@ -96,20 +96,19 @@ impl Falir for FlairStruct {
         covariates: Option<(&[f64], &[f64])>,
         quantiles: &[f64],
     ) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
-        // quantiles がNoneやNaN(IEEE 754)でないこと、各値が 0.0〜1.0 の範囲内であること
         if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
             return Err(Error::InvalidInput("quantiles must be non-empty and each value in [0.0, 1.0]"));
         }
-        let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates)?;
+        let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
         let result = quantiles.iter().map(|&q| {
             (0..horizon).map(|h| {
                 let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
-                col.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
                 let idx = (q * (n_samples - 1) as f64).round() as usize;
                 col[idx]
             }).collect()
         }).collect();
-        Ok((result, conf))        
+        Ok((result, conf))
     }
 }
 
@@ -118,13 +117,14 @@ impl Falir for FlairStruct {
 // ============================================================
 
 fn get_period(frequency: &Freq) -> usize {
-    match freq {
-        Freq::Secondly(10) => 6,  // 1 minute
+    match frequency {
+        Freq::Secondly(10) => 6,
         Freq::Minutely(5)  => 12,
         Freq::Minutely(10) => 6,
         Freq::Minutely(15) => 4,
-        Freq::Minutely(30) => 48, // 1 day
+        Freq::Minutely(30) => 48,
         Freq::Hourly(1)    => 24,
+        Freq::Hourly(12)   => 2,
         Freq::Daily        => 7,
         Freq::Weekly       => 52,
         Freq::Monthly      => 12,
@@ -135,13 +135,14 @@ fn get_period(frequency: &Freq) -> usize {
 }
 
 fn get_periods(frequency: &Freq) -> Vec<usize> {
-    match freq {
+    match frequency {
         Freq::Secondly(10) => vec![6],
         Freq::Minutely(5)  => vec![12, 288],
         Freq::Minutely(10) => vec![6, 144],
         Freq::Minutely(15) => vec![4, 96],
         Freq::Minutely(30) => vec![48, 336],
         Freq::Hourly(1)    => vec![24, 168],
+        Freq::Hourly(12)   => vec![2, 14],
         Freq::Daily        => vec![7, 365],
         Freq::Weekly       => vec![52],
         Freq::Monthly      => vec![12],
@@ -268,11 +269,11 @@ fn median_f64(mut v: Vec<f64>) -> f64 {
 // Returns (beta [nf], loo_residuals [n_train], gcv_min).
 // x_rows: row-major design matrix (n_train rows, each of length nf).
 
-fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
+fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> Result<(Vec<f64>, Vec<f64>, f64), Error> {
     let m = x_rows.len();
     let nf = x_rows[0].len();
 
-    let (u, s, vt) = svd::full(x_rows).unwrap_or_default();
+    let (u, s, vt) = svd::full(x_rows).map_err(Error::Svd)?;
     let k = s.len();
 
     let s2: Vec<f64> = s.iter().map(|&v| v * v).collect();
@@ -328,63 +329,15 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> (Vec<f64>, Vec<f64>, f64) {
         .map(|(&ri, &hi)| ri / (1.0 - hi).max(EPS))
         .collect();
 
-    (beta, loo, gcv_min)
-}
-
-// ── Freq helpers ──────────────────────────────────────────────────────
-
-/// Normalise a pandas-style frequency string.
-/// "MIN" → "T", anchored offsets "W-SUN" / "Q-DEC" / "A-DEC" → "W" / "Q" / "A".
-fn resolve_freq(frequency: &str) -> String {
-    let f = freq.trim().to_uppercase().replace("MIN", "T");
-    for base in ["W", "Q", "A", "Y"] {
-        if f.starts_with(&format!("{base}-")) {
-            return String::from(base);
-        }
-    }
-    f
-}
-
-fn get_period(frequency: &str) -> usize {
-    match resolve_freq(freq).as_str() {
-        "S"         => 60,
-        "T" | "MIN" => 60,
-        "5T"        => 12,
-        "10T"       => 6,
-        "15T"       => 4,
-        "10S"       => 6,
-        "H"         => 24,
-        "D"         => 7,
-        "W"         => 52,
-        "M"         => 12,
-        "Q"         => 4,
-        "A" | "Y"   => 1,
-        _           => 1,
-    }
-}
-
-fn get_periods(frequency: &str) -> Vec<usize> {
-    match resolve_freq(freq).as_str() {
-        "10S" => vec![6, 360],
-        "S"   => vec![60],
-        "5T"  => vec![12, 288],
-        "10T" => vec![6, 144],
-        "15T" => vec![4, 96],
-        "H"   => vec![24, 168],
-        "D"   => vec![7, 365],
-        "W"   => vec![52],
-        "M"   => vec![12],
-        "Q"   => vec![4],
-        _     => vec![],
-    }
+    Ok((beta, loo, gcv_min))
 }
 
 // ── Period selection ───────────────────────────────────────────────────────
 
 /// Returns (P, secondary_periods, primary_period, calendar_periods).
-fn select_period(y: &[f64], n: usize, frequency: &str) -> (usize, Vec<usize>, usize, Vec<usize>) {
-    let period = get_period(freq);
-    let cal = get_periods(freq);
+fn select_period(y: &[f64], n: usize, frequency: &Freq) -> (usize, Vec<usize>, usize, Vec<usize>) {
+    let period = get_period(frequency);
+    let cal = get_periods(frequency);
 
     let mut candidates: Vec<usize> = if !cal.is_empty() {
         cal.iter().copied().filter(|&p| p >= 1 && n / p >= MIN_COMPLETE).collect()
@@ -552,40 +505,6 @@ fn estimate_shape(
     (s_forecast, s_hist, m)
 }
 
-// ── Seasonal strength: γ-dampening ────────────────────────────────────────
-
-/// γ = (r₁ − r_rand) / (1 − r_rand), where r₁ = σ₁²/Σσᵢ².
-/// Returns γ ∈ [0, 1].  P < 2 or too-short series → 1.0 (no dampening).
-fn estimate_gamma(mat: &[Vec<f64>], big_p: usize, n_complete: usize) -> f64 {
-    if big_p < 2 || n_complete < MIN_COMPLETE {
-        return 1.0;
-    }
-    let x: Vec<Vec<f64>> = (0..big_p).map(|r| (0..n_complete).map(|c| mat[r][c]).collect()).collect();
-    let s = svd::singvals(&x);
-    let total: f64 = s.iter().map(|&v| v * v).sum();
-    if total < EPS_LOG {
-        return 1.0;
-    }
-    let r1 = s[0] * s[0] / total;
-    let r_rand = 1.0 / big_p.min(n_complete) as f64;
-    ((r1 - r_rand) / (1.0 - r_rand).max(EPS)).clamp(0.0, 1.0)
-}
-
-/// S^γ with re-normalisation.  S is (n_rows × P); γ=1 returns S unchanged.
-fn dampen_shape(s: &mut Vec<Vec<f64>>, gamma: f64) {
-    if gamma >= 1.0 - EPS {
-        return;
-    }
-    for row in s.iter_mut() {
-        for v in row.iter_mut() {
-            *v = pow(v.max(EPS_LOG), gamma);
-        }
-        let sum: f64 = row.iter().sum();
-        let sum = sum.max(EPS);
-        row.iter_mut().for_each(|v| *v /= sum);
-    }
-}
-
 // ── Cross-period helper ────────────────────────────────────────────────────
 
 fn compute_cross_periods(
@@ -606,28 +525,16 @@ fn compute_cross_periods(
 
 // ── Main forecast function ─────────────────────────────────────────────────
 
-/// Generate probabilistic forecast sample paths.
-///
-/// # Arguments
-/// * `y_raw`     – historical time series (1-D slice)
-/// * `horizon`   – steps ahead to forecast (>= 1)
-/// * `freq`      – frequency string: `"H"`, `"D"`, `"W"`, `"M"`, `"Q"`,
-///                 `"S"`, `"T"`, `"5T"`, `"10T"`, `"15T"`, `"A"` / `"Y"`
-/// * `n_samples` – number of Monte-Carlo paths (>= 1)
-/// * `seed`      – RNG seed (use any `u64`; same seed → identical output)
-///
-/// # Returns
-/// `Ok(Vec<Vec<f64>>)` of shape `[n_samples][horizon]`, or an error string.
 pub fn forecast(
     y_raw: &[f64],
     horizon: usize,
-    frequency: &str,
+    frequency: &Freq,
     n_samples: usize,
     seed: u64,
-) -> Result<Vec<Vec<f64>>, String> {
-    if horizon < 1   { return Err(format!("horizon must be >= 1, got {horizon}")); }
-    if n_samples < 1 { return Err(format!("n_samples must be >= 1, got {n_samples}")); }
-    if y_raw.is_empty() { return Err("y must not be empty".into()); }
+) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
+    if y_raw.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
+    if horizon < 1     { return Err(Error::InvalidInput("horizon must be >= 1")); }
+    if n_samples < 1   { return Err(Error::InvalidInput("n_samples must be >= 1")); }
 
     let mut rng = Rng::new(seed);
 
@@ -639,7 +546,7 @@ pub fn forecast(
     let n = y.len();
 
     // ── Period selection ────────────────────────────────────────────────
-    let (mut big_p, mut secondary, period, _cal) = select_period(&y, n, freq);
+    let (mut big_p, mut secondary, period, _cal) = select_period(&y, n, frequency);
     let mut n_complete = n / big_p;
 
     // Fallback for too-short series
@@ -654,12 +561,13 @@ pub fn forecast(
                 sqrt(diffs.iter().map(|&d| pow(d - m, 2.0)).sum::<f64>() / diffs.len() as f64)
                     .max(EPS_SHAPE)
             };
-            return Ok((0..n_samples).map(|_| {
+            let samples = (0..n_samples).map(|_| {
                 (0..horizon).map(|_| {
                     let v = fc_val + rng.normal() * sigma;
                     v.clamp(fc_val - sigma * 10.0, fc_val + sigma * 10.0)
                 }).collect()
-            }).collect());
+            }).collect();
+            return Ok((samples, Confidence { rank1: None, gcv: None }));
         }
     }
 
@@ -683,11 +591,6 @@ pub fn forecast(
 
     // ── Shape estimation ────────────────────────────────────────────────
     let (mut s_forecast, mut s_hist, m) = estimate_shape(&mat, n_complete, big_p, &secondary, &l, horizon);
-
-    // ── Seasonal strength: dampen Shape when rank-1 structure is weak ───
-    let gamma = estimate_gamma(&mat, big_p, n_complete);
-    dampen_shape(&mut s_forecast, gamma);
-    dampen_shape(&mut s_hist, gamma);
 
     // ── Cross-period / Shape₂ ───────────────────────────────────────────
     let (cross_periods, mut max_cp) = compute_cross_periods(&secondary, big_p, period, n_complete);
@@ -728,7 +631,7 @@ pub fn forecast(
         row
     }).collect();
 
-    let (beta, loo_resid, _) = ridge_sa(&x_rows, &l_innov[start..]);
+    let (beta, loo_resid, gcv_min) = ridge_sa(&x_rows, &l_innov[start..])?;
 
     // ── Stochastic Level paths ──────────────────────────────────────────
     let loo_len = loo_resid.len();
@@ -814,105 +717,73 @@ pub fn forecast(
         }
     }
 
-    Ok(samples)
+    let rank1 = {
+        let s = svd::singvals(&mat);
+        let total: f64 = s.iter().map(|&v| v * v).sum();
+        if total < EPS || big_p < 2 { None } else { Some(s[0] * s[0] / total) }
+    };
+    let conf = Confidence { rank1, gcv: Some(gcv_min) };
+
+    Ok((samples, conf))
 }
 
-/// Quantile forecast: returns `[quantile][horizon]` for each q in `quantiles`.
-///
-/// `quantiles` must all be in [0, 1].  Returns an error if any are out of range.
 pub fn forecast_quantiles(
     y: &[f64],
     horizon: usize,
-    frequency: &str,
+    frequency: &Freq,
     n_samples: usize,
     seed: u64,
     quantiles: &[f64],
-) -> Result<Vec<Vec<f64>>, String> {
-    if let Some(&q) = quantiles.iter().find(|&&q| !(0.0..=1.0).contains(&q)) {
-        return Err(format!("quantile {q} out of range [0, 1]"));
+) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
+    if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
+        return Err(Error::InvalidInput("quantiles must be non-empty and each value in [0.0, 1.0]"));
     }
-    let samples = forecast(y, horizon, frequency, n_samples, seed)?;
+    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
     let ns = samples.len();
-    Ok(quantiles.iter().map(|&q| {
+    let result = quantiles.iter().map(|&q| {
         (0..horizon).map(|h| {
             let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
             col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
             let idx = round(q * (ns - 1) as f64) as usize;
             col[idx]
         }).collect()
-    }).collect())
+    }).collect();
+    Ok((result, conf))
 }
 
-/// Point forecast: mean over `n_samples` paths.
 pub fn forecast_mean(
     y: &[f64],
     horizon: usize,
-    frequency: &str,
+    frequency: &Freq,
     n_samples: usize,
     seed: u64,
-) -> Result<Vec<f64>, String> {
-    let samples = forecast(y, horizon, frequency, n_samples, seed)?;
+) -> Result<(Vec<f64>, Confidence), Error> {
+    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
     let n = samples.len() as f64;
-    Ok((0..horizon).map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n).collect())
+    let mean = (0..horizon).map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n).collect();
+    Ok((mean, conf))
 }
 
 // ── Confidence report ──────────────────────────────────────────────────────
-
-/// Self-evaluation of how well FLAIR's assumptions fit the input series.
-/// All fields are derived solely from `y` and `freq` — no forecast is run.
-#[derive(Debug, Clone)]
-pub struct Confidence {
-    /// `s[0]^2 / Σs^2` of the seasonal matrix (period × n_complete).
-    /// Measures how close the data is to rank-1 structure.
-    /// 1.0 = perfect single-component seasonality; ~1/P = flat/random.
-    ///
-    /// `None` in two distinct cases:
-    /// - `freq` has no intra-period structure (`"A"` / `"Y"`, period = 1) —
-    ///   FLAIR skips seasonal decomposition and runs Level-only AR; this is
-    ///   expected and not a sign of poor fit.
-    /// - Series is too short to form `MIN_COMPLETE` complete periods —
-    ///   seasonal decomposition is unreliable regardless of freq.
-    pub rank1: Option<f64>,
-
-    /// Seasonal strength after removing random-matrix baseline.
-    /// `(r1 - 1/min(P,N)) / (1 - 1/min(P,N))`, clamped to [0, 1].
-    /// 1.0 = strong clean seasonality; 0.0 = no detectable seasonal structure.
-    /// `None` in the same cases as `rank1`.
-    pub gamma: Option<f64>,
-
-    /// GCV-optimal LOO error from the Ridge regression on the Level series.
-    /// Lower = Level is more predictable from its own history.
-    /// Scale is that of the Box-Cox-transformed, mean-subtracted Level.
-    /// `None` when the series is too short to fit the Ridge model.
-    pub gcv: Option<f64>,
-
-    /// `true` if the core numerical primitives (Box-Cox round-trip and Ridge
-    /// in-sample fit) pass their internal sanity checks on synthetic data.
-    /// Computed once per `confidence()` call at negligible cost.
-    /// A `false` here indicates a build or platform numerical issue.
-    pub impl_ok: bool,
-}
 
 /// Evaluate how well FLAIR's assumptions fit `y` without running a forecast.
 ///
 /// Returns a [`Confidence`] struct with three independent scores derived
 /// purely from the input.  Use this to decide whether a forecast is likely
 /// to be meaningful before committing to `n_samples` Monte-Carlo paths.
-pub fn confidence(y_raw: &[f64], frequency: &str) -> Confidence {
+pub fn confidence(y_raw: &[f64], frequency: &Freq) -> Result<Confidence, Error> {
     let n = y_raw.len();
 
-    // Apply the same shift as forecast() so all values > 0
     let y_floor = y_raw.iter().cloned().fold(f64::INFINITY, f64::min);
     let y_shift = (1.0 - y_floor).max(1.0);
     let y: Vec<f64> = y_raw.iter().map(|&v| (if v.is_nan() { 0.0 } else { v }) + y_shift).collect();
 
-    let (big_p, _, _, _) = select_period(&y, n, freq);
+    let (big_p, _, _, _) = select_period(&y, n, frequency);
     let n_complete = n / big_p;
 
     if n_complete < MIN_COMPLETE || big_p < 2 {
-        // Series too short for seasonal decomposition — try Ridge only
-        let gcv = ridge_gcv_only(&y);
-        return Confidence { rank1: None, gamma: None, gcv, impl_ok: check_impl() };
+        let gcv = ridge_gcv_only(&y)?;
+        return Ok(Confidence { rank1: None, gcv });
     }
 
     let usable = n_complete * big_p;
@@ -920,17 +791,8 @@ pub fn confidence(y_raw: &[f64], frequency: &str) -> Confidence {
     let mat_dm: Vec<Vec<f64>> = (0..big_p).map(|ph| (0..n_complete).map(|ci| y_trim[ci * big_p + ph]).collect()).collect();
     let s = svd::singvals(&mat_dm);
     let total: f64 = s.iter().map(|&v| v * v).sum();
+    let rank1 = if total < EPS { None } else { Some(s[0] * s[0] / total) };
 
-    let (rank1, gamma) = if total < EPS {
-        (None, None)
-    } else {
-        let r1 = s[0] * s[0] / total;
-        let r_rand = 1.0 / big_p.min(n_complete) as f64;
-        let g = ((r1 - r_rand) / (1.0 - r_rand).max(EPS)).clamp(0.0, 1.0);
-        (Some(r1), Some(g))
-    };
-
-    // Level series → Box-Cox → Ridge GCV
     let l: Vec<f64> = (0..n_complete)
         .map(|ci| (0..big_p).map(|ph| y_trim[ci * big_p + ph]).sum())
         .collect();
@@ -943,48 +805,23 @@ pub fn confidence(y_raw: &[f64], frequency: &str) -> Confidence {
         let x_rows: Vec<Vec<f64>> = (1..n_complete)
             .map(|ti| vec![1.0, ti as f64 / n_complete as f64, l_innov[ti - 1]])
             .collect();
-        let (_, _, gcv_min) = ridge_sa(&x_rows, &l_innov[1..]);
+        let (_, _, gcv_min) = ridge_sa(&x_rows, &l_innov[1..])?;
         Some(gcv_min)
     } else {
         None
     };
 
-    Confidence { rank1, gamma, gcv, impl_ok: check_impl() }
+    Ok(Confidence { rank1, gcv })
 }
 
-/// Minimal Ridge GCV for very short series (no seasonal decomposition).
-fn ridge_gcv_only(y: &[f64]) -> Option<f64> {
+fn ridge_gcv_only(y: &[f64]) -> Result<Option<f64>, Error> {
     let n = y.len();
-    if n < 3 { return None; }
+    if n < 3 { return Ok(None); }
     let x_rows: Vec<Vec<f64>> = (1..n)
         .map(|i| vec![1.0, i as f64 / n as f64, y[i - 1]])
         .collect();
-    let (_, _, gcv_min) = ridge_sa(&x_rows, &y[1..]);
-    Some(gcv_min)
-}
-
-/// Sanity-check the core numerical primitives (Box-Cox and Ridge) on synthetic
-/// data.  Returns `true` if both pass, `false` on any numerical failure.
-fn check_impl() -> bool {
-    // Box-Cox round-trip
-    let orig = [0.5f64, 1.0, 2.0, 5.0, 10.0];
-    for &lam in &[0.0f64, 0.5, 1.0] {
-        let recovered = bc_inv(&bc(&orig, lam), lam);
-        if orig.iter().zip(recovered.iter()).any(|(&o, &r)| (o - r).abs() > 1e-9) {
-            return false;
-        }
-    }
-    // Ridge in-sample fit on perfect linear data
-    let x_rows: Vec<Vec<f64>> = (0..30).map(|i| vec![1.0, i as f64 / 30.0]).collect();
-    let y_lin: Vec<f64> = x_rows.iter().map(|r| 2.0 + 3.0 * r[1]).collect();
-    let (beta, _, _) = ridge_sa(&x_rows, &y_lin);
-    let rmse = sqrt(x_rows.iter().zip(y_lin.iter())
-        .map(|(r, &yi)| {
-            let pred: f64 = r.iter().zip(beta.iter()).map(|(&xi, &bi)| xi * bi).sum();
-            pow(yi - pred, 2.0)
-        })
-        .sum::<f64>() / 30.0);
-    rmse < 0.1
+    let (_, _, gcv_min) = ridge_sa(&x_rows, &y[1..])?;
+    Ok(Some(gcv_min))
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -996,14 +833,9 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn impl_ok_passes() {
-        assert!(check_impl(), "core numerical primitives failed sanity check");
-    }
-
-    #[test]
     fn output_shape() {
         let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
-        let s = forecast(&y, 12, "M", 50, 0).unwrap();
+        let (s, _) = forecast(&y, 12, &Freq::Monthly, 50, 0).unwrap();
         assert_eq!(s.len(), 50);
         assert_eq!(s[0].len(), 12);
     }
@@ -1021,15 +853,15 @@ mod tests {
 
     #[test]
     fn error_cases() {
-        assert!(forecast(&[], 5, "H", 10, 0).is_err());
-        assert!(forecast(&[1.0, 2.0], 0, "H", 10, 0).is_err());
-        assert!(forecast(&[1.0, 2.0], 5, "H", 0, 0).is_err());
+        assert!(forecast(&[], 5, &Freq::hourly(1).unwrap(), 10, 0).is_err());
+        assert!(forecast(&[1.0, 2.0], 0, &Freq::hourly(1).unwrap(), 10, 0).is_err());
+        assert!(forecast(&[1.0, 2.0], 5, &Freq::hourly(1).unwrap(), 0, 0).is_err());
     }
 
     #[test]
     fn forecast_mean_shape() {
         let y: Vec<f64> = (0..100).map(|i| i as f64).collect();
-        let m = forecast_mean(&y, 7, "D", 20, 5).unwrap();
+        let (m, _) = forecast_mean(&y, 7, &Freq::Daily, 20, 5).unwrap();
         assert_eq!(m.len(), 7);
         assert!(m.iter().all(|&v| v.is_finite()));
     }
@@ -1038,7 +870,7 @@ mod tests {
     fn forecast_quantiles_shape_and_order() {
         let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
         let qs = [0.1, 0.5, 0.9];
-        let q = forecast_quantiles(&y, 12, "M", 100, 0, &qs).unwrap();
+        let (q, _) = forecast_quantiles(&y, 12, &Freq::Monthly, 100, 0, &qs).unwrap();
         assert_eq!(q.len(), 3);
         assert!(q.iter().all(|row| row.len() == 12));
         for h in 0..12 {
@@ -1049,16 +881,10 @@ mod tests {
     #[test]
     fn forecast_quantiles_invalid_q() {
         let y: Vec<f64> = (0..50).map(|i| i as f64).collect();
-        assert!(forecast_quantiles(&y, 5, "M", 10, 0, &[0.5, 1.5]).is_err());
+        assert!(forecast_quantiles(&y, 5, &Freq::Monthly, 10, 0, &[0.5, 1.5]).is_err());
     }
 
     // ── dataset-iter tests ────────────────────────────────────────────────
-    //
-    // Each entry in DATASETS describes a CSV in examples/dataset/ and how to
-    // parse it.  The same suite of checks runs over every dataset:
-    //   - forecast() and confidence() complete without error
-    //   - all output values are finite
-    //   - impl_ok is true
     //
     // ParseMode:
     //   Col(n)      – take the n-th comma-separated column (0-based), skip 1 header row
@@ -1071,7 +897,7 @@ mod tests {
 
     struct Dataset {
         file: &'static str,
-        frequency: &'static str,
+        frequency: Freq,
         mode: ParseMode,
     }
 
@@ -1107,13 +933,13 @@ mod tests {
 
     fn datasets() -> Vec<Dataset> {
         vec![
-            Dataset { file: "air_passengers.csv",  frequency: "M",  mode: ParseMode::Col(2) },
-            Dataset { file: "nottem.csv",           frequency: "M",  mode: ParseMode::Col(2) },
-            Dataset { file: "sunspot_year.csv",     frequency: "A",  mode: ParseMode::Col(2) },
-            Dataset { file: "noaa_temp_annual.csv", frequency: "A",  mode: ParseMode::Col(1) },
-            Dataset { file: "noaa_temp_monthly.csv",frequency: "M",  mode: ParseMode::Col(1) },
-            Dataset { file: "world_bank.csv",       frequency: "A",  mode: ParseMode::WorldBank },
-            Dataset { file: "japan_demand.csv",     frequency: "H",  mode: ParseMode::JapanTokyo },
+            Dataset { file: "air_passengers.csv",  frequency: Freq::Monthly,  mode: ParseMode::Col(2) },
+            Dataset { file: "nottem.csv",           frequency: Freq::Monthly,  mode: ParseMode::Col(2) },
+            Dataset { file: "sunspot_year.csv",     frequency: Freq::Yearly,   mode: ParseMode::Col(2) },
+            Dataset { file: "noaa_temp_annual.csv", frequency: Freq::Yearly,   mode: ParseMode::Col(1) },
+            Dataset { file: "noaa_temp_monthly.csv",frequency: Freq::Monthly,  mode: ParseMode::Col(1) },
+            Dataset { file: "world_bank.csv",       frequency: Freq::Yearly,   mode: ParseMode::WorldBank },
+            Dataset { file: "japan_demand.csv",     frequency: Freq::Hourly(1),mode: ParseMode::JapanTokyo },
         ]
     }
 
@@ -1123,16 +949,13 @@ mod tests {
             let y = load(&ds);
             assert!(!y.is_empty(), "{}: empty", ds.file);
 
-            let c = confidence(&y, ds.freq);
-            assert!(c.impl_ok, "{}: impl_ok false", ds.file);
+            confidence(&y, &ds.frequency)
+                .unwrap_or_else(|e| panic!("{}: confidence error: {e:?}", ds.file));
 
-            let fc = forecast_mean(&y, 12, ds.frequency, 30, 0)
-                .unwrap_or_else(|e| panic!("{}: forecast error: {e}", ds.file));
+            let (fc, _) = forecast_mean(&y, 12, &ds.frequency, 30, 0)
+                .unwrap_or_else(|e| panic!("{}: forecast error: {e:?}", ds.file));
             assert_eq!(fc.len(), 12, "{}: wrong horizon", ds.file);
-            assert!(
-                fc.iter().all(|v| v.is_finite()),
-                "{}: non-finite output", ds.file
-            );
+            assert!(fc.iter().all(|v| v.is_finite()), "{}: non-finite output", ds.file);
         }
     }
 }

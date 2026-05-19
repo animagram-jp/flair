@@ -10,16 +10,14 @@
 
 use core::{
     cmp::Ordering,
-    result,
+    result::Result,
 };
 use alloc::{
     vec,
     vec::Vec,
 };
 use libm::{sqrt, pow};
-use crate::SvdError as Error;
-
-type Result<T> = result::Result<T, Error>;
+use crate::SvdError;
 
 /// Compute full thin SVD: A = U * Σ * V^T
 ///
@@ -36,16 +34,16 @@ type Result<T> = result::Result<T, Error>;
 /// ];
 /// let (u, s, vt) = svd::full(&a)?;
 /// ```
-pub fn full(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>)> {
+pub fn full(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>), SvdError> {
     // Validate input
     if a.is_empty() {
-        return Err(Error::InvalidInput("empty matrix"));
+        return Err(SvdError::DimensionMismatch);
     }
     let _m = a.len();
     let n = a[0].len();
 
     if n == 0 {
-        return Err(Error::InvalidInput("empty matrix"));
+        return Err(SvdError::DimensionMismatch);
     }
 
     // Make a mutable copy
@@ -138,14 +136,14 @@ struct BidigState {
 ///
 /// The original matrix A is overwritten with the bidiagonal matrix B.
 /// The Householder vectors are stored in the lower/upper triangular parts.
-fn gebrd(a: &mut Vec<Vec<f64>>) -> Result<BidigState> {
+fn gebrd(a: &mut Vec<Vec<f64>>) -> Result<BidigState, SvdError> {
     let m = a.len();
     if m == 0 {
-        return Err(Error::InvalidInput("empty matrix"));
+        return Err(SvdError::DimensionMismatch);
     }
     let n = a[0].len();
     if n == 0 {
-        return Err(Error::InvalidInput("empty matrix"));
+        return Err(SvdError::DimensionMismatch);
     }
 
     // Initialize U and V as identity matrices
@@ -309,7 +307,7 @@ fn apply_householder_right_to_v(v: &mut Vec<Vec<f64>>, tau: f64, w: &[f64], col_
 /// 3. Continue until all superdiagonal elements are sufficiently small
 ///
 /// Returns (singular_values, U, V^T)
-fn dbdsqr(state: &BidigState, max_iter: usize) -> Result<(Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>)> {
+fn dbdsqr(state: &BidigState, max_iter: usize) -> Result<(Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>), SvdError> {
     let m = state.u.len();
     let n = state.v.len();
     let k = state.d.len();
