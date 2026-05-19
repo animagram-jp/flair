@@ -8,7 +8,7 @@
 # unit tests
 cargo test
 
-# integration tests (confidence + forecast + determinism)
+# integration tests
 cargo run --example integration_tests --release
 
 # forecast accuracy (80/20 train-test split, all datasets)
