@@ -8,15 +8,18 @@
 //!           "Singular value decomposition and least squares solutions"
 //!           Numerische Mathematik, 14(5), 403-420
 
-use core::cmp::Ordering;
+use core::{
+    cmp::Ordering,
+    result,
+};
 use alloc::{
     vec,
     vec::Vec,
 };
-use crate::SvdError as Error;
 use libm::{sqrt, pow};
+use crate::SvdError as Error;
 
-type Result<T> = core::result::Result<T, Error>;
+type Result<T> = result::Result<T, Error>;
 
 /// Compute full thin SVD: A = U * Σ * V^T
 ///
