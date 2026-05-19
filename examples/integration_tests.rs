@@ -3,8 +3,8 @@
 // Run: cargo run --example integration_tests
 //
 // Checks:
-//   1. japan_demand     — Tokyo hourly demand: forecast + determinism
-//   2. elec_per_capita  — Japan/USA/Germany/China annual kWh/capita: forecast
+//   1. japan_demand_tokyo — Tokyo hourly demand: forecast + determinism
+//   2. elec_per_capita    — Japan/USA/Germany/China annual kWh/capita: forecast
 
 use flair::{forecast_mean, Freq};
 use std::fs;
@@ -28,15 +28,11 @@ fn load_col(file: &str, col: usize, skip: usize) -> Option<Vec<f64>> {
 fn check_japan_demand() {
     println!("=== japan_demand_tokyo ===");
     let y = match load_col("japan_demand_tokyo.csv", 2, 1) {
-        Some(v) => v,
-        None => { println!("  (skipped: file not found — see README for download instructions)"); return; }
+        Some(v) if !v.is_empty() => v,
+        _ => { println!("  (skipped: file not found — see README for download instructions)"); return; }
     };
     println!("  loaded {} hourly observations (Tokyo MW)", y.len());
     let freq = Freq::hourly(1).unwrap();
-
-    // let c = confidence(&y, &freq).unwrap_or_else(|e| fail("confidence", &format!("{e:?}")));
-    // println!("  rank1 : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}")));
-    // println!("  gcv   : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
 
     let (fc, _) = forecast_mean(&y, 24, &freq, 200, 42).unwrap_or_else(|e| fail("forecast", &format!("{e:?}")));
     println!("  Tokyo next 24h forecast (MW):");
@@ -68,14 +64,10 @@ fn check_elec_per_capita() {
     for (name, col) in series {
         println!("\n=== elec_per_capita / {} ===", name);
         let y = match load_col("elec_per_capita.csv", col, 1) {
-            Some(v) => v,
-            None => { println!("  (skipped: file not found)"); continue; }
+            Some(v) if !v.is_empty() => v,
+            _ => { println!("  (skipped: file not found)"); continue; }
         };
         println!("  loaded {} annual observations (kWh/capita)", y.len());
-
-        // let c = confidence(&y, &Freq::Yearly).unwrap_or_else(|e| fail("confidence", &format!("{e:?}")));
-        // println!("  rank1 : {}", c.rank1.map_or("n/a".into(), |v| format!("{v:.3}")));
-        // println!("  gcv   : {}", c.gcv  .map_or("n/a".into(), |v| format!("{v:.4}")));
 
         let (fc, _) = forecast_mean(&y, 3, &Freq::Yearly, 200, 42).unwrap_or_else(|e| fail("forecast", &format!("{e:?}")));
         println!("  next 3y forecast (kWh/capita):");
