@@ -2,16 +2,16 @@
 
 Rust implement of time series forecasting FLAIR by Takato Honda
 
-## Reference
-
-- [FLAIR](https://github.com/Mellon-Inc/FLAIR)
-
 ## Version
 
-| Version | Status    | Date      | Description  |
-|---------|-----------|-----------|--------------|
-| 0.1.0   | Released  | 2026-4-09 | initial      |
-| 0.2.0   | Scheduled | 2026-5-31 | follow 0.6.1 |
+| Version | Status    | Date      | Description   |
+|---------|-----------|-----------|---------------|
+| 0.1.0   | Released  | 2026-4-09 | initial       |
+| 0.2.0   | Scheduled | 2026-5-31 | follow 0.6.1* |
+
+## Reference
+
+- [*FLAIR](https://github.com/Mellon-Inc/FLAIR)
 
 ---
 
@@ -58,9 +58,9 @@ Variants with an interval argument are constructed via fallible constructors (`F
 | `gamma` | `Option<f64>` | Seasonal strength above random-matrix baseline, [0, 1]. 1.0 = strong clean seasonality. |
 | `gcv` | `Option<f64>` | Ridge LOO error on Level series. Lower = Level more predictable. Scale depends on Box-Cox transform. |
 
-## Performance
+## Dataset Test
 
-### Datasets
+### Result
 
 80/20 train-test split. MASE < 1.0 means better than naive 1-step forecast.  
 Run: `cargo run --example forecast_validation --release`
@@ -80,7 +80,7 @@ Run: `cargo run --example forecast_validation --release`
 
 rank1/gamma: `n/a` = annual series (period=1, no intra-period structure); `—` = not computed for this run.
 
-## Datasets
+### Reference
 
 | file | variable | freq | range | obs | source |
 |------|----------|------|-------|-----|--------|
