@@ -13,14 +13,14 @@ Rust implement of time series forecasting FLAIR by Takato Honda
 **Common arguments**
 
 - **`y: &[f64]`** — Observed values as a flat, equally-spaced 1-D array. No timestamps; the interval is given separately via `freq`. NaN is treated as 0.0.
-- **`freq: &str`** — Observation interval: `"H"` (hourly), `"D"` (daily), `"W"` (weekly), `"M"` (monthly), `"Q"` (quarterly), `"A"` / `"Y"` (annual), etc.
+- **`frequency: &str`** — Observation interval: `"H"` (hourly), `"D"` (daily), `"W"` (weekly), `"M"` (monthly), `"Q"` (quarterly), `"A"` / `"Y"` (annual), etc.
 
 | Mod     | Fn | Input | Output | Description |
 |---------|----|-------|--------|-------------|
-| `flair` | `confidence` | `y: &[f64]`, `freq: &str` | `Confidence` | Evaluates how well FLAIR's assumptions fit the input without running a forecast. Returns four fields: `rank1` (seasonal rank-1 strength), `gamma` (seasonal structure above random baseline), `gcv` (Ridge LOO error on the Level series), `impl_ok` (numerical sanity check). Use before forecasting to assess data suitability. |
-|         | `forecast` | `y: &[f64]`, `horizon: usize`, `freq: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<Vec<f64>>>` `[n_samples][horizon]` | Generates Monte-Carlo sample paths. Each row is one forecast path. Use when the full uncertainty distribution is needed. |
-|         | `forecast_mean` | `y: &[f64]`, `horizon: usize`, `freq: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<f64>>` `[horizon]` | Returns the mean over all sample paths as a single point forecast. The simplest option for a single-line prediction. |
-|         | `forecast_quantiles` | `y: &[f64]`, `horizon: usize`, `freq: &str`, `n_samples: usize`, `seed: u64`, `quantiles: &[f64]` | `Result<Vec<Vec<f64>>>` `[quantile][horizon]` | Aggregates sample paths into quantiles. Pass e.g. `&[0.1, 0.5, 0.9]` to get pessimistic / median / optimistic forecast bands. |
+| `flair` | `confidence` | `y: &[f64]`, `frequency: &str` | `Confidence` | Evaluates how well FLAIR's assumptions fit the input without running a forecast. Returns four fields: `rank1` (seasonal rank-1 strength), `gamma` (seasonal structure above random baseline), `gcv` (Ridge LOO error on the Level series), `impl_ok` (numerical sanity check). Use before forecasting to assess data suitability. |
+|         | `forecast` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<Vec<f64>>>` `[n_samples][horizon]` | Generates Monte-Carlo sample paths. Each row is one forecast path. Use when the full uncertainty distribution is needed. |
+|         | `forecast_mean` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<f64>>` `[horizon]` | Returns the mean over all sample paths as a single point forecast. The simplest option for a single-line prediction. |
+|         | `forecast_quantiles` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64`, `quantiles: &[f64]` | `Result<Vec<Vec<f64>>>` `[quantile][horizon]` | Aggregates sample paths into quantiles. Pass e.g. `&[0.1, 0.5, 0.9]` to get pessimistic / median / optimistic forecast bands. |
 |         | `seed_from_time` *(std only)* | — | `u64` | Returns a non-deterministic seed from the system clock. Pass to any forecast function when reproducibility is not needed. |
 
 ## Performance
@@ -111,7 +111,7 @@ For non-deterministic output, pass `flair::seed_from_time()` (requires `std` fea
 - https://github.com/TakatoHonda/FLAIR
 - https://zenn.dev/t_honda/articles/flair-time-series-forecasting
 
-### Datasets
+## Datasets
 
 | file | variable | freq | range | obs | source |
 |------|----------|------|-------|-----|--------|
@@ -130,7 +130,7 @@ For non-deterministic output, pass `flair::seed_from_time()` (requires `std` fea
 ```
 Apache-2.0
 Original: "FLAIR: Factored Level And Interleaved Ridge - single-equation time series forecasting"
-  https://github.com/TakatoHonda/FLAIR
+  https://github.com/Mellon-Inc/FLAIR
   Copyright (c) Takato Honda
 Changes: Reimplemented in Rust; linear algebra from scratch; adapted for WASM deployment
 Author: Andyou <andyou@animagram.jp>
@@ -141,14 +141,14 @@ Author: Andyou <andyou@animagram.jp>
 ### 共通引数
 
 - **`y: &[f64]`** — 時系列の観測値のみを等間隔で並べた1次元配列。日時情報は含まない。間隔は `freq` で別途指定する。NaN は 0.0 として扱われる。
-- **`freq: &str`** — 観測間隔を表す文字列。`"H"`（時次）・`"D"`（日次）・`"W"`（週次）・`"M"`（月次）・`"Q"`（四半期）・`"A"` / `"Y"`（年次）など。
+- **`frequency: &str`** — 観測間隔を表す文字列。`"H"`（時次）・`"D"`（日次）・`"W"`（週次）・`"M"`（月次）・`"Q"`（四半期）・`"A"` / `"Y"`（年次）など。
 
 ### 提供ポート
 
 | Mod     | Fn | Input | Output | Description |
 |---------|----|-------|--------|-------------|
-| `flair` | `confidence` | `y: &[f64]`, `freq: &str` | `Confidence` | 予測を実行せずに入力データの適合度を評価する。`rank1`（季節性の強さ）・`gamma`（季節構造の純粋さ）・`gcv`（レベル系列の予測しやすさ）・`impl_ok`（数値実装の健全性）の4フィールドを返す。予測前のデータ確認用。 |
-|         | `forecast` | `y: &[f64]`, `horizon: usize`, `freq: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<Vec<f64>>>` `[n_samples][horizon]` | モンテカルロサンプルパスを生成する。各行が1本の予測パス。不確実性の全分布が必要な場合に使う。 |
-|         | `forecast_mean` | `y: &[f64]`, `horizon: usize`, `freq: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<f64>>` `[horizon]` | サンプルパスを平均した点予測を返す。最もシンプルな予測用途向け。 |
-|         | `forecast_quantiles` | `y: &[f64]`, `horizon: usize`, `freq: &str`, `n_samples: usize`, `seed: u64`, `quantiles: &[f64]` | `Result<Vec<Vec<f64>>>` `[quantile][horizon]` | サンプルパスから指定パーセンタイルを集計する。`&[0.1, 0.5, 0.9]` を渡すと悲観・中央値・楽観の予測帯域を得られる。 |
+| `flair` | `confidence` | `y: &[f64]`, `frequency: &str` | `Confidence` | 予測を実行せずに入力データの適合度を評価する。`rank1`（季節性の強さ）・`gamma`（季節構造の純粋さ）・`gcv`（レベル系列の予測しやすさ）・`impl_ok`（数値実装の健全性）の4フィールドを返す。予測前のデータ確認用。 |
+|         | `forecast` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<Vec<f64>>>` `[n_samples][horizon]` | モンテカルロサンプルパスを生成する。各行が1本の予測パス。不確実性の全分布が必要な場合に使う。 |
+|         | `forecast_mean` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64` | `Result<Vec<f64>>` `[horizon]` | サンプルパスを平均した点予測を返す。最もシンプルな予測用途向け。 |
+|         | `forecast_quantiles` | `y: &[f64]`, `horizon: usize`, `frequency: &str`, `n_samples: usize`, `seed: u64`, `quantiles: &[f64]` | `Result<Vec<Vec<f64>>>` `[quantile][horizon]` | サンプルパスから指定パーセンタイルを集計する。`&[0.1, 0.5, 0.9]` を渡すと悲観・中央値・楽観の予測帯域を得られる。 |
 |         | `seed_from_time` *（std のみ）* | — | `u64` | システム時刻からシードを生成する。再現性が不要な場合に各予測関数へ渡す。 |

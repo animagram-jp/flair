@@ -36,7 +36,7 @@ fn mase(train: &[f64], actual: &[f64], predicted: &[f64]) -> f64 {
     mae / naive_mae
 }
 
-fn test_dataset(name: &str, file: &str, col: usize, skip: usize, freq: &str, horizon: usize) {
+fn test_dataset(name: &str, file: &str, col: usize, skip: usize, frequency: &str, horizon: usize) {
     let y = match load_col(file, col, skip) {
         Some(v) => v,
         None => { println!("\n=== {} === (skipped: file not found)", name); return; }
@@ -55,7 +55,7 @@ fn test_dataset(name: &str, file: &str, col: usize, skip: usize, freq: &str, hor
     println!("  total: {} obs, train: {} obs, test: {} obs", y.len(), train.len(), test_actual.len());
     
     // Make forecast from training data for next `horizon` steps
-    let fc = match forecast_mean(train, horizon.min(test_actual.len()), freq, 100, 42) {
+    let fc = match forecast_mean(train, horizon.min(test_actual.len()), frequency, 100, 42) {
         Ok(f) => f,
         Err(e) => {
             println!("  ERROR: {}", e);
