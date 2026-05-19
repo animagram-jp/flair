@@ -764,65 +764,6 @@ pub fn forecast_mean(
     Ok((mean, conf))
 }
 
-// ── Confidence report ──────────────────────────────────────────────────────
-
-/// Evaluate how well FLAIR's assumptions fit `y` without running a forecast.
-///
-/// Returns a [`Confidence`] struct with three independent scores derived
-/// purely from the input.  Use this to decide whether a forecast is likely
-/// to be meaningful before committing to `n_samples` Monte-Carlo paths.
-pub fn confidence(y_raw: &[f64], frequency: &Freq) -> Result<Confidence, Error> {
-    let n = y_raw.len();
-
-    let y_floor = y_raw.iter().cloned().fold(f64::INFINITY, f64::min);
-    let y_shift = (1.0 - y_floor).max(1.0);
-    let y: Vec<f64> = y_raw.iter().map(|&v| (if v.is_nan() { 0.0 } else { v }) + y_shift).collect();
-
-    let (big_p, _, _, _) = select_period(&y, n, frequency);
-    let n_complete = n / big_p;
-
-    if n_complete < MIN_COMPLETE || big_p < 2 {
-        let gcv = ridge_gcv_only(&y)?;
-        return Ok(Confidence { rank1: None, gcv });
-    }
-
-    let usable = n_complete * big_p;
-    let y_trim = &y[n - usable..];
-    let mat_dm: Vec<Vec<f64>> = (0..big_p).map(|ph| (0..n_complete).map(|ci| y_trim[ci * big_p + ph]).collect()).collect();
-    let s = svd::singvals(&mat_dm);
-    let total: f64 = s.iter().map(|&v| v * v).sum();
-    let rank1 = if total < EPS { None } else { Some(s[0] * s[0] / total) };
-
-    let l: Vec<f64> = (0..n_complete)
-        .map(|ci| (0..big_p).map(|ph| y_trim[ci * big_p + ph]).sum())
-        .collect();
-    let lam = bc_lambda(&l);
-    let l_bc = bc(&l, lam);
-    let last_l = l_bc[n_complete - 1];
-    let l_innov: Vec<f64> = l_bc.iter().map(|&v| v - last_l).collect();
-
-    let gcv = if n_complete > 2 {
-        let x_rows: Vec<Vec<f64>> = (1..n_complete)
-            .map(|ti| vec![1.0, ti as f64 / n_complete as f64, l_innov[ti - 1]])
-            .collect();
-        let (_, _, gcv_min) = ridge_sa(&x_rows, &l_innov[1..])?;
-        Some(gcv_min)
-    } else {
-        None
-    };
-
-    Ok(Confidence { rank1, gcv })
-}
-
-fn ridge_gcv_only(y: &[f64]) -> Result<Option<f64>, Error> {
-    let n = y.len();
-    if n < 3 { return Ok(None); }
-    let x_rows: Vec<Vec<f64>> = (1..n)
-        .map(|i| vec![1.0, i as f64 / n as f64, y[i - 1]])
-        .collect();
-    let (_, _, gcv_min) = ridge_sa(&x_rows, &y[1..])?;
-    Ok(Some(gcv_min))
-}
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
@@ -948,10 +889,6 @@ mod tests {
         for ds in datasets() {
             let y = load(&ds);
             assert!(!y.is_empty(), "{}: empty", ds.file);
-
-            confidence(&y, &ds.frequency)
-                .unwrap_or_else(|e| panic!("{}: confidence error: {e:?}", ds.file));
-
             let (fc, _) = forecast_mean(&y, 12, &ds.frequency, 30, 0)
                 .unwrap_or_else(|e| panic!("{}: forecast error: {e:?}", ds.file));
             assert_eq!(fc.len(), 12, "{}: wrong horizon", ds.file);
