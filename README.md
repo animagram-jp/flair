@@ -1,6 +1,6 @@
 # flair
 
-Rust implement of time series forecasting FLAIR by Takato Honda
+Wasm-compilable implement of time series forecasting algorithm FLAIR. 
 
 ## Version
 
@@ -12,6 +12,7 @@ Rust implement of time series forecasting FLAIR by Takato Honda
 ## Reference
 
 - [*FLAIR](https://github.com/Mellon-Inc/FLAIR)
+- [Algorithm Paper](https://arxiv.org/abs/2605.07222)
 
 ---
 
