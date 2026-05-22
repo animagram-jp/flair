@@ -1,6 +1,6 @@
 # flair
 
-Wasm-compilable implement of time series forecasting algorithm FLAIR. 
+Wasm-compilable implement of time series forecasting algorithm FLAIR.
 
 ## Version
 
@@ -63,7 +63,7 @@ Variants with an interval argument are constructed via fallible constructors (`F
 
 ### Result
 
-80/20 train-test split. MASE < 1.0 means better than naive 1-step forecast.  
+80/20 train-test split. MASE < 1.0 means better than naive 1-step forecast.
 Run: `cargo run --example forecast_validation --release`
 
 | dataset | freq | obs | horizon | rank1 | gamma | MAE | RMSE | MAPE | MASE |
@@ -94,6 +94,11 @@ rank1/gamma: `n/a` = annual series (period=1, no intra-period structure); `—` 
 | `elec_per_capita.csv` | Electric power consumption (kWh per capita) — Japan, USA, Germany, China | A | 1990–2023 | 34 | World Bank WDI — EG.USE.ELEC.KH.PC |
 
 ⚠️ `japan_demand_tokyo.csv` is not included in this repository. To use it, download the demand CSV from [japanesepower.org](https://japanesepower.org/), extract the Tokyo column, and place it at `examples/dataset/japan_demand_tokyo.csv`.
+
+## Dependency
+
+- [libm](https://crates.io/crates/libm)
+- [dev only: nalgebra](https://crates.io/crates/nalgebra)
 
 ## License
 
@@ -133,4 +138,3 @@ Author: Andyou <andyou@animagram.jp>
 | `rank1` | `Option<f64>` | 季節行列の `s[0]²/Σs²`。1.0 = 完全な単一周期性。`None` は period=1（Yearly 等）または系列が短い場合（エラーではない）。 |
 | `gamma` | `Option<f64>` | ランダム行列ベースライン除去後の季節強度。[0, 1]。1.0 = 強い季節性。 |
 | `gcv` | `Option<f64>` | RidgeのLOOCV最小誤差。低いほどLevelが予測しやすい。スケールはBox-Cox変換依存。 |
-
