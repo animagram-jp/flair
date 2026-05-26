@@ -2,21 +2,23 @@
 name        = "flair-rs"
 version     = "0.1.0"
 edition     = "2024"
-description = "Rust port of FLAIR (Factored Level And Interleaved Ridge) — lightweight time series forecasting, no_std/wasm32 compatible"
+description = "Wasm-compilable implement of time series forecasting algorithm FLAIR."
 license     = "Apache-2.0"
 repository  = "https://github.com/animagram-jp/flair"
 keywords    = ["forecasting", "time-series", "wasm", "no-std", "statistics"]
 categories  = ["science", "no-std", "wasm"]
 
 [features]
-default = ["std"]
+default = []
 std = []
 
 [dependencies]
 libm = "0.2"
 
 [dev-dependencies]
-nalgebra = "0.33"
+nalgebra   = "0.33"
+log        = "0.4"
+env_logger = "0.11"
 
 [lib]
 name = "flair"
