@@ -14,6 +14,7 @@ Wasm-compilable implement of time series forecasting algorithm FLAIR.
 - [*FLAIR](https://github.com/Mellon-Inc/FLAIR)
 - [Algorithm Paper](https://arxiv.org/abs/2605.07222)
 - [LAPACK](https://www.netlib.org/lapack/explore-html)
+- [quadrature](https://crates.io/crates/quadrature)
 
 ---
 
