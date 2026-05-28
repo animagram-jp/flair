@@ -13,6 +13,7 @@ use core::{
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod flair;
+pub mod optshrink;
 pub mod svd;
 
 pub use flair::{forecast, forecast_mean, forecast_quantiles};

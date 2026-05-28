@@ -2,3 +2,4 @@
 **.lock
 CLAUDE.md
 examples/dataset/japan_demand_tokyo.csv
+examples/dataset/bike_daily.csv

@@ -1,6 +1,5 @@
-//! FLAIR: Factored Level And Interleaved Ridge
-//! Rust port of <https://github.com/TakatoHonda/FLAIR>
-//!
+//! FLAIR: Factored Level And Interleaved Ridge (arXiv:2605.07222) by Takato Honda 
+
 #![allow(clippy::many_single_char_names, clippy::too_many_arguments)]
 
 use core::{
@@ -10,8 +9,6 @@ use core::{
 };
 use alloc::{
     collections::BTreeSet,
-    format,
-    string::String,
     vec,
     vec::Vec,
 };
@@ -78,7 +75,7 @@ impl Flair for FlairStruct {
         horizon: usize,
         n_samples: usize,
         seed: u64,
-        covariates: Option<(&[f64], &[f64])>,
+        _covariates: Option<(&[f64], &[f64])>,
     ) -> Result<(Vec<f64>, Confidence), Error>{
         let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
         let mean = (0..horizon)
@@ -93,7 +90,7 @@ impl Flair for FlairStruct {
         horizon: usize,
         n_samples: usize,
         seed: u64,
-        covariates: Option<(&[f64], &[f64])>,
+        _covariates: Option<(&[f64], &[f64])>,
         quantiles: &[f64],
     ) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
         if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
@@ -252,17 +249,36 @@ fn bc_inv(z: &[f64], lam: f64) -> Vec<f64> {
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+fn interp_nan(arr: &[f64]) -> Vec<f64> {
+    let valid: Vec<usize> = arr.iter().enumerate()
+        .filter(|&(_, &v)| !v.is_nan())
+        .map(|(i, _)| i)
+        .collect();
+    match valid.len() {
+        0 => vec![0.0; arr.len()],
+        1 => arr.iter().map(|&v| if v.is_nan() { arr[valid[0]] } else { v }).collect(),
+        _ => arr.iter().enumerate().map(|(i, &v)| {
+            if !v.is_nan() { return v; }
+            let lo = valid.partition_point(|&j| j < i);
+            if lo == 0 {
+                arr[valid[0]]
+            } else if lo == valid.len() {
+                arr[valid[valid.len() - 1]]
+            } else {
+                let x0 = valid[lo - 1];
+                let x1 = valid[lo];
+                let t = (i - x0) as f64 / (x1 - x0) as f64;
+                arr[x0] + t * (arr[x1] - arr[x0])
+            }
+        }).collect(),
+    }
+}
+
 fn logspace(lo: f64, hi: f64, n: usize) -> Vec<f64> {
     (0..n).map(|i| pow(10.0_f64, lo + (hi - lo) * i as f64 / (n - 1) as f64)).collect()
 }
 
 fn slice_mean(v: &[f64]) -> f64 { v.iter().sum::<f64>() / v.len() as f64 }
-
-fn median_f64(mut v: Vec<f64>) -> f64 {
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-    let n = v.len();
-    if n % 2 == 0 { (v[n / 2 - 1] + v[n / 2]) / 2.0 } else { v[n / 2] }
-}
 
 // ── Ridge with Soft-Average GCV ────────────────────────────────────────────
 //
@@ -349,21 +365,23 @@ fn select_period(y: &[f64], n: usize, frequency: &Freq) -> (usize, Vec<usize>, u
         candidates.push(if n / p >= MIN_COMPLETE { p } else { 1 });
     }
 
-    let big_p = if candidates.len() == 1 {
-        candidates[0]
-    } else {
+    let big_p = {
         let min_cand = *candidates.iter().min().unwrap();
         let t_max = n.min(MAX_COMPLETE * min_cand);
         let y_sel = &y[y.len().saturating_sub(t_max)..];
-        let mut best_p = candidates[0];
-        let mut best_bic = f64::INFINITY;
+
+        // P=1 null: mean + noise, 1 parameter
+        let mean = slice_mean(y_sel);
+        let rss_null: f64 = y_sel.iter().map(|&v| pow(v - mean, 2.0)).sum();
+        let bic_null = t_max as f64 * ln((rss_null / t_max as f64).max(EPS_LOG)) + ln(t_max as f64);
+        let mut best_p = 1usize;
+        let mut best_bic = bic_null;
 
         for &p_cand in &candidates {
             let nc = t_max / p_cand;
             if nc < MIN_COMPLETE { continue; }
             let start = y_sel.len() - nc * p_cand;
             let y_use = &y_sel[start..];
-            // mat_c[ph, ci] = y_use[ci * p_cand + ph]  (shape: p_cand × nc)
             let mat_c: Vec<Vec<f64>> = (0..p_cand).map(|ph| (0..nc).map(|ci| y_use[ci * p_cand + ph]).collect()).collect();
             let s = svd::singvals(&mat_c);
             let rss1: f64 = s.iter().skip(1).map(|&v| v * v).sum();
@@ -417,22 +435,20 @@ fn compute_shape2(l: &[f64], cp: usize, n_complete: usize) -> Option<Vec<f64>> {
     Some(s2)
 }
 
-// ── Shape estimation (Dirichlet-Multinomial empirical Bayes) ───────────────
+// ── Shape estimation (Frozen Shape: global average of last K periods) ─────
 //
 // mat: [P][n_complete]  – phase × period matrix
-// l:   [n_complete]     – period-level aggregation
 // Returns (S_forecast [m][P], S_hist [n_complete][P], m).
 
 fn estimate_shape(
     mat: &[Vec<f64>],
     n_complete: usize,
     big_p: usize,
-    secondary: &[usize],
-    l: &[f64],
+    _secondary: &[usize],
+    _l: &[f64],
     horizon: usize,
 ) -> (Vec<Vec<f64>>, Vec<Vec<f64>>, usize) {
     let k = SHAPE_K.min(n_complete);
-    // S_global[ph] = mean of (mat[ph][ci] / sum_ph mat[ph][ci]) over last k periods
     let mut s_global = vec![0.0f64; big_p];
     for ph in 0..big_p {
         let props: Vec<f64> = (n_complete - k..n_complete).map(|ci| {
@@ -444,65 +460,36 @@ fn estimate_shape(
     let sg_sum = s_global.iter().sum::<f64>().max(EPS);
     s_global.iter_mut().for_each(|v| *v /= sg_sum);
 
-    // Context window C (secondary / P)
-    let c = secondary.first().copied().and_then(|sp| {
-        if sp % big_p == 0 && n_complete >= sp / big_p { Some(sp / big_p) } else { None }
-    }).unwrap_or(1);
+    let m = (horizon + big_p - 1) / big_p;
+    (vec![s_global.clone(); m], vec![s_global; n_complete], m)
+}
 
-    let m = (horizon + big_p - 1) / big_p; // ceil(horizon / P)
+// ── Damped trend helpers (#7) ─────────────────────────────────────────────
 
-    if c <= 1 {
-        return (vec![s_global.clone(); m], vec![s_global.clone(); n_complete], m);
+fn estimate_phi(l_bc: &[f64]) -> f64 {
+    let n = l_bc.len();
+    if n < 3 { return 0.0; }
+    // diff(L_bc): len = n-1
+    let dl: Vec<f64> = l_bc.windows(2).map(|w| w[1] - w[0]).collect();
+    if dl.len() < 5 { return 0.0; }
+    let mean = slice_mean(&dl);
+    let dl_c: Vec<f64> = dl.iter().map(|&v| v - mean).collect();
+    let c0: f64 = dl_c.iter().map(|&v| v * v).sum();
+    if c0 < EPS { return 0.0; }
+    let c1: f64 = dl_c.windows(2).map(|w| w[0] * w[1]).sum();
+    (c1 / c0).max(0.0)
+}
+
+fn compute_damped_trend(l_bc: &[f64], m: usize, n_complete: usize) -> Vec<f64> {
+    let phi = estimate_phi(l_bc).min(1.0 - EPS);
+    if phi <= EPS {
+        // phi≈0: 線形外挿（最終ステップ位置を固定）
+        return vec![(n_complete as f64 - 1.0) / n_complete as f64; m];
     }
-
-    // Context-dependent Dirichlet-Multinomial
-    let k_ds = (k * c).min(n_complete);
-    let ds_start = n_complete - k_ds;
-    let ds_mat: Vec<Vec<f64>> = (0..big_p).map(|ph| mat[ph][ds_start..].to_vec()).collect();
-    let ds_l = &l[ds_start..];
-    let ds_ctx: Vec<usize> = (ds_start..n_complete).map(|i| i % c).collect();
-
-    let ds_totals: Vec<f64> = (0..k_ds).map(|ci| (0..big_p).map(|ph| ds_mat[ph][ci]).sum::<f64>()).collect();
-    let ds_props: Vec<Vec<f64>> = (0..big_p).map(|ph| {
-        (0..k_ds).map(|ci| {
-            if ds_totals[ci] > EPS { ds_mat[ph][ci] / ds_totals[ci] } else { 1.0 / big_p as f64 }
-        }).collect()
-    }).collect();
-
-    let mp: Vec<f64> = (0..big_p).map(|ph| slice_mean(&ds_props[ph])).collect();
-    let vp: Vec<f64> = (0..big_p).map(|ph| {
-        let m = mp[ph];
-        ds_props[ph].iter().map(|&v| pow(v - m, 2.0)).sum::<f64>() / (k_ds.max(2) - 1) as f64
-    }).collect();
-
-    let valid_kappas: Vec<f64> = (0..big_p)
-        .filter(|&ph| mp[ph] > EPS_SHAPE && vp[ph] > EPS)
-        .map(|ph| mp[ph] * (1.0 - mp[ph]) / vp[ph] - 1.0)
-        .collect();
-    let kappa = if valid_kappas.len() >= 2 {
-        median_f64(valid_kappas).max(0.0)
-    } else {
-        1e6
-    };
-
-    let mut s_ctx: Vec<Vec<f64>> = vec![s_global.clone(); c];
-    for c_val in 0..c {
-        let mask: Vec<usize> = ds_ctx.iter().enumerate()
-            .filter(|&(_, &cv)| cv == c_val).map(|(i, _)| i).collect();
-        if mask.is_empty() { continue; }
-        let l_sum: f64 = mask.iter().map(|&i| ds_l[i]).sum();
-        let denom = (kappa + l_sum).max(EPS);
-        let mut s_c: Vec<f64> = (0..big_p).map(|ph| {
-            (kappa * s_global[ph] + mask.iter().map(|&i| ds_mat[ph][i]).sum::<f64>()) / denom
-        }).collect();
-        let sc_sum = s_c.iter().sum::<f64>().max(EPS);
-        s_c.iter_mut().for_each(|v| *v /= sc_sum);
-        s_ctx[c_val] = s_c;
-    }
-
-    let s_forecast: Vec<Vec<f64>> = (0..m).map(|j| s_ctx[(n_complete + j) % c].clone()).collect();
-    let s_hist: Vec<Vec<f64>> = (0..n_complete).map(|i| s_ctx[i % c].clone()).collect();
-    (s_forecast, s_hist, m)
+    (0..m).map(|j| {
+        let jf = (j + 1) as f64;
+        ((n_complete as f64 - 1.0) + phi * (1.0 - pow(phi, jf)) / (1.0 - phi)) / n_complete as f64
+    }).collect()
 }
 
 // ── Cross-period helper ────────────────────────────────────────────────────
@@ -538,8 +525,8 @@ pub fn forecast(
 
     let mut rng = Rng::new(seed);
 
-    // NaN-to-zero + shift so all values >= 1
-    let mut y: Vec<f64> = y_raw.iter().map(|&v| if v.is_nan() { 0.0 } else { v }).collect();
+    // NaN linear interpolation + shift so all values >= 1
+    let mut y: Vec<f64> = interp_nan(y_raw);
     let y_floor = y.iter().cloned().fold(f64::INFINITY, f64::min);
     let y_shift = (1.0 - y_floor).max(1.0);
     y.iter_mut().for_each(|v| *v += y_shift);
@@ -571,6 +558,18 @@ pub fn forecast(
         }
     }
 
+    // Dynamic Ridge DoF guard: n_train >= 2p (LOOCV leverage stability)
+    if big_p > 1 {
+        let (_, max_cp_est) = compute_cross_periods(&secondary, big_p, period, n_complete);
+        let start_est = if max_cp_est >= 2 { max_cp_est } else { 1 };
+        let nf_est = 2 + 1 + if max_cp_est >= 2 { 1 } else { 0 }; // nb + n_lag (exog未実装分は0)
+        if n_complete.saturating_sub(start_est) < 2 * nf_est {
+            big_p = 1;
+            secondary.clear();
+            n_complete = n;
+        }
+    }
+
     // Cap history to MAX_COMPLETE periods
     if n_complete > MAX_COMPLETE {
         y = y[y.len() - MAX_COMPLETE * big_p..].to_vec();
@@ -590,7 +589,7 @@ pub fn forecast(
         .collect();
 
     // ── Shape estimation ────────────────────────────────────────────────
-    let (mut s_forecast, mut s_hist, m) = estimate_shape(&mat, n_complete, big_p, &secondary, &l, horizon);
+    let (s_forecast, s_hist, m) = estimate_shape(&mat, n_complete, big_p, &secondary, &l, horizon);
 
     // ── Cross-period / Shape₂ ───────────────────────────────────────────
     let (cross_periods, mut max_cp) = compute_cross_periods(&secondary, big_p, period, n_complete);
@@ -611,7 +610,7 @@ pub fn forecast(
     let last_l = l_bc[n_complete - 1];
     let l_innov: Vec<f64> = l_bc.iter().map(|&v| v - last_l).collect();
 
-    // ── Ridge regression setup ──────────────────────────────────────────
+        // ── Ridge regression setup ──────────────────────────────────────────
     let mut start = if max_cp >= 2 { max_cp.max(1) } else { 1 };
     if max_cp >= 2 && n_complete.saturating_sub(start) < MIN_COMPLETE {
         max_cp = 0;
@@ -621,17 +620,45 @@ pub fn forecast(
     let nb = 2usize; // intercept + trend
     let n_lag = if max_cp >= 2 { 2 } else { 1 };
     let nf = nb + n_lag;
+    let n_train = n_complete - start;
 
-    let x_rows: Vec<Vec<f64>> = (start..n_complete).map(|ti| {
-        let mut row = vec![0.0f64; nf];
-        row[0] = 1.0;
-        row[1] = ti as f64 / n_complete as f64;
-        row[nb] = l_innov[ti - 1];
-        if max_cp >= 2 { row[nb + 1] = l_innov[ti - max_cp]; }
-        row
-    }).collect();
+    // #6 LSR1: diff-targetが使えるか（n_train >= 3）
+    let use_diff = n_train >= 3;
 
-    let (beta, loo_resid, gcv_min) = ridge_sa(&x_rows, &l_innov[start..])?;
+    let (x_rows, y_target): (Vec<Vec<f64>>, Vec<f64>) = if use_diff {
+        // y_target = diff(l_innov[start-1..])
+        let yt: Vec<f64> = (start..n_complete).map(|ti| l_innov[ti] - l_innov[ti - 1]).collect();
+        let xr: Vec<Vec<f64>> = (start..n_complete).map(|ti| {
+            let mut row = vec![0.0f64; nf];
+            row[0] = 1.0;
+            row[1] = ti as f64 / n_complete as f64;
+            row[nb] = -l_innov[ti - 1]; // 符号反転: δ₂ = 1 - β₂
+            if max_cp >= 2 { row[nb + 1] = l_innov[ti - max_cp]; }
+            row
+        }).collect();
+        (xr, yt)
+    } else {
+        let yt = l_innov[start..].to_vec();
+        let xr: Vec<Vec<f64>> = (start..n_complete).map(|ti| {
+            let mut row = vec![0.0f64; nf];
+            row[0] = 1.0;
+            row[1] = ti as f64 / n_complete as f64;
+            row[nb] = l_innov[ti - 1];
+            if max_cp >= 2 { row[nb + 1] = l_innov[ti - max_cp]; }
+            row
+        }).collect();
+        (xr, yt)
+    };
+
+    let (mut beta, loo_resid, gcv_min) = ridge_sa(&x_rows, &y_target)?;
+
+    // #6 LSR1: β₂ = 1 - δ₂ を復元
+    if use_diff {
+        beta[nb] = 1.0 - beta[nb];
+    }
+
+    // #7 Damped trend: phi = max(lag-1 autocorr of diff(L_bc), 0)
+    let damped_trend: Vec<f64> = compute_damped_trend(&l_bc, m, n_complete);
 
     // ── Stochastic Level paths ──────────────────────────────────────────
     let loo_len = loo_resid.len();
@@ -652,7 +679,7 @@ pub fn forecast(
         let ti = n_complete + j;
         for si in 0..n_samples {
             let pred = beta[0]
-                + beta[1] * (ti as f64 / n_complete as f64)
+                + beta[1] * damped_trend[j]  // #7 線形トレンド → 減衰トレンド
                 + beta[nb] * l_paths[si][ti - 1];
             let pred = if max_cp >= 2 { pred + beta[nb + 1] * l_paths[si][ti - max_cp] } else { pred };
             l_paths[si][ti] = pred + noise_pool[si][j];
@@ -678,17 +705,49 @@ pub fn forecast(
     // fitted_mat[ph][ci] = s_hist[ci][ph] * l[ci]
     // R[ph][kr_idx] = relative residual over last k_r periods
     let k_r = PHASE_NOISE_K.min(n_complete);
-    let r_mat: Vec<Vec<f64>> = (0..big_p).map(|ph| {
+
+    // fitted_clamp = max(0.1 * median(|fitted| > EPS), EPS_BOXCOX)
+    // ロバストな分母クランプ。EPS_BOXCOXの固定値だと低水準phaseで残差が爆発する
+    let fitted_clamp = {
+        let mut vals: Vec<f64> = Vec::new();
+        for ph in 0..big_p {
+            for ci in n_complete - k_r..n_complete {
+                let f = (s_hist[ci][ph] * l[ci]).abs();
+                if f > EPS { vals.push(f); }
+            }
+        }
+        if vals.is_empty() {
+            EPS_BOXCOX
+        } else {
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+            let mid = vals.len() / 2;
+            let med = if vals.len() % 2 == 0 { (vals[mid - 1] + vals[mid]) / 2.0 } else { vals[mid] };
+            (med * 0.1_f64).max(EPS_BOXCOX)
+        }
+    };
+
+    let mut r_mat: Vec<Vec<f64>> = (0..big_p).map(|ph| {
         (n_complete - k_r..n_complete).map(|ci| {
             let fitted = s_hist[ci][ph] * l[ci];
-            (mat[ph][ci] - fitted) / fitted.abs().max(EPS_BOXCOX)
+            (mat[ph][ci] - fitted) / fitted.abs().max(fitted_clamp)
         }).collect()
     }).collect();
 
-    // col_idx[s][j] = random column in r_mat for (sample s, period step j)
-    let col_idx: Vec<Vec<usize>> = (0..n_samples)
-        .map(|_| (0..m).map(|_| rng.randint(k_r)).collect())
-        .collect();
+    // James-Stein per-phase bias shrinkage (posterior-mean toward zero)
+    if k_r >= 4 {
+        for ph in 0..big_p {
+            let mean = slice_mean(&r_mat[ph]);
+            let var = r_mat[ph].iter().map(|&v| pow(v - mean, 2.0)).sum::<f64>()
+                / (k_r - 1) as f64;
+            let se_sq = var / k_r as f64;
+            let noise_fraction = (se_sq / (mean * mean + se_sq + EPS)).clamp(0.0, 1.0);
+            let shrink = mean * noise_fraction;
+            r_mat[ph].iter_mut().for_each(|v| *v -= shrink);
+        }
+    }
+
+    // col_idx[s] = 1列をsampleごとに選び全stepで共有（scenario-coherent）
+    let col_idx: Vec<usize> = (0..n_samples).map(|_| rng.randint(k_r)).collect();
 
     // ── Assemble output ─────────────────────────────────────────────────
     let step_idx: Vec<usize> = (0..horizon).map(|h| h / big_p).collect();
@@ -699,21 +758,41 @@ pub fn forecast(
         let path: Vec<f64> = (0..horizon).map(|h| {
             let sj = step_idx[h];
             let ph = phase_idx[h];
-            let phase_noise = r_mat[ph][col_idx[si][sj]];
+            let phase_noise = r_mat[ph][col_idx[si]]; // scenario-coherent: sampleごとに同一列
             l_hat_all[si][sj] * s_forecast[sj][ph] * (1.0 + phase_noise) - y_shift
         }).collect();
         samples.push(path);
     }
 
-    // Clip outliers to ±1 range around recent history
+    // Clip: 上限は recent window max + range、下限は全期間のfloor（非対称）
     let lookback = (horizon * 2).max(PHASE_NOISE_K).min(y_raw.len());
-    let y_lo = y_raw[y_raw.len() - lookback..].iter().cloned().fold(f64::INFINITY, f64::min);
-    let y_hi = y_raw[y_raw.len() - lookback..].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let y_range = (y_hi - y_lo).max(EPS_SHAPE);
-    for path in &mut samples {
-        for v in path.iter_mut() {
-            if !v.is_finite() { *v = 0.0; }
-            else { *v = v.clamp(y_lo - y_range, y_hi + y_range); }
+    let valid_rec: Vec<f64> = y_raw[y_raw.len() - lookback..].iter().cloned().filter(|v| !v.is_nan()).collect();
+    let valid_all: Vec<f64> = y_raw.iter().cloned().filter(|v| !v.is_nan()).collect();
+    if !valid_rec.is_empty() && !valid_all.is_empty() {
+        let y_hi    = valid_rec.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let y_range = (y_hi - valid_rec.iter().cloned().fold(f64::INFINITY, f64::min)).max(EPS_SHAPE);
+        let y_floor = valid_all.iter().cloned().fold(f64::INFINITY, f64::min);
+        for path in &mut samples {
+            for v in path.iter_mut() {
+                if !v.is_finite() { *v = y_floor; }
+                else { *v = v.clamp(y_floor, y_hi + y_range); }
+            }
+        }
+    } else {
+        for path in &mut samples {
+            for v in path.iter_mut() {
+                if !v.is_finite() { *v = 0.0; }
+            }
+        }
+    }
+
+    // Integer snap: 入力が全て整数値なら予測も整数に丸める
+    let is_integer_series = y_raw.iter().filter(|v| !v.is_nan()).all(|&v| v == v.round());
+    if is_integer_series {
+        for path in &mut samples {
+            for v in path.iter_mut() {
+                *v = v.round();
+            }
         }
     }
 
@@ -772,6 +851,7 @@ mod tests {
     use super::*;
     extern crate std;
     use std::fs;
+    use alloc::format;
 
     #[test]
     fn output_shape() {
@@ -868,6 +948,7 @@ mod tests {
             Dataset { file: "noaa_temp_annual.csv", frequency: Freq::Yearly,   mode: ParseMode::Col(1) },
             Dataset { file: "noaa_temp_monthly.csv",frequency: Freq::Monthly,  mode: ParseMode::Col(1) },
             Dataset { file: "japan_demand_tokyo.csv", frequency: Freq::Hourly(1),mode: ParseMode::JapanTokyo },
+            Dataset { file: "bike_daily.csv",       frequency: Freq::Daily,    mode: ParseMode::Col(13) },
         ]
     }
 
@@ -882,4 +963,5 @@ mod tests {
             assert!(fc.iter().all(|v| v.is_finite()), "{}: non-finite output", ds.file);
         }
     }
+
 }
