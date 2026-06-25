@@ -1,4 +1,4 @@
-# flair
+# flair architecture
 
 ## Rule
 
@@ -44,20 +44,11 @@ the same series (y = 100 + 1.5*t + 20*sin(2*pi*t/12), monthly, 144 points,
 seed=0, n_samples=500) and asserts the mean forecast is within +-15 of the
 flaircast 0.6.1 reference values recorded in the test.
 
-## Excutable size
+## Executable size
 
 Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 
 | target | library size (rlib) |
 |--------|---------------------|
-| x86-64 | 612 KB |
-| wasm32 | 371 KB |
-
-## determinism
-
-Same seed → bit-identical output. Different seeds → different output.  
-For non-deterministic output, pass `flair::seed_from_time()` (requires `std` feature, enabled by default).
-
-```
-  [OK] determinism (same seed identical; different seed differs)
-```
+| x86-64 | 716 KB |
+| wasm32 | 471 KB |

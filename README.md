@@ -6,8 +6,8 @@ Wasm-compilable implement of time series forecasting algorithm FLAIR.
 
 | Version | Status    | Date      | Description   |
 |---------|-----------|-----------|---------------|
-| 0.1.0   | Released  | 2026-4-09 | initial       |
-| 0.2.0   | Scheduled | 2026-6-31 | follow 0.6.1* |
+| 0.1.0   | Released  | 2026-04-09 | initial      |
+| 0.2.0   | Released  | 2026-06-26 | LWCP, follow 0.6.1* |
 
 This project adheres to [Semantic Versioning](https://semver.org/).
 
@@ -61,7 +61,6 @@ Variants with an interval argument are constructed via fallible constructors (`F
 | field | type | description |
 |-------|------|-------------|
 | `rank1` | `Option<f64>` | `s[0]²/Σs²` of seasonal matrix. 1.0 = pure rank-1 seasonality. `None` when period=1 (e.g. Yearly) or series too short. |
-| `gamma` | `Option<f64>` | Seasonal strength above random-matrix baseline, [0, 1]. 1.0 = strong clean seasonality. |
 | `gcv` | `Option<f64>` | Ridge LOO error on Level series. Lower = Level more predictable. Scale depends on Box-Cox transform. |
 
 ## Dataset Test
@@ -71,20 +70,20 @@ Variants with an interval argument are constructed via fallible constructors (`F
 80/20 train-test split. MASE < 1.0 means better than naive 1-step forecast.
 Run: `cargo run --example forecast_validation --release`
 
-| dataset | freq | obs | horizon | rank1 | gamma | MAE | RMSE | MAPE | MASE |
-|---------|------|-----|---------|-------|-------|-----|------|------|------|
-| air_passengers | M | 144 | 12 | — | — | 16.83 | 20.31 | 4.21% | 0.80 |
-| nottem | M | 240 | 12 | — | — | 1.49 | 1.93 | 3.49% | 0.34 |
-| noaa_temp_monthly | M | 1,740 | 12 | — | — | 0.07 | 0.08 | 21.35% | 0.76 |
-| sunspot_year | A | 289 | 10 | — | — | 36.49 | 41.00 | 96.32% | 2.27 |
-| noaa_temp_annual | A | 145 | 10 | — | — | 0.24 | 0.26 | 43.20% | 2.79 |
-| japan_demand_tokyo | H | 70,128 | 24 | 0.996 | 0.996 | 1736.82 | 2083.10 | 4.99% | 1.38 |
-| elec_japan | A | 34 | 5 | n/a | n/a | 238.75 | 283.17 | 3.05% | 1.44 |
-| elec_usa | A | 34 | 5 | n/a | n/a | 331.93 | 374.81 | 2.65% | 1.56 |
-| elec_germany | A | 34 | 5 | n/a | n/a | 437.62 | 501.66 | 6.69% | 4.44 |
-| elec_china | A | 34 | 5 | n/a | n/a | 466.77 | 549.63 | 8.75% | 3.26 |
+| dataset | freq | obs | horizon | rank1 | MAE | RMSE | MAPE | MASE |
+|---------|------|-----|---------|-------|-----|------|------|------|
+| air_passengers | M | 144 | 12 | 0.999 | 11.50 | 16.48 | 2.66% | 0.55 |
+| nottem | M | 240 | 12 | 0.998 | 1.66 | 2.19 | 3.87% | 0.38 |
+| noaa_temp_monthly | M | 1,740 | 12 | 0.996 | 0.11 | 0.12 | 36.26% | 1.23 |
+| sunspot_year | A | 289 | 10 | n/a | 35.28 | 39.31 | 95.01% | 2.19 |
+| noaa_temp_annual | A | 145 | 10 | n/a | 0.18 | 0.21 | 33.42% | 2.17 |
+| japan_demand_tokyo | H | 70,128 | 24 | 0.995 | 1856.47 | 2137.52 | 5.58% | 1.47 |
+| elec_japan | A | 34 | 5 | n/a | 220.06 | 262.78 | 2.81% | 1.33 |
+| elec_usa | A | 34 | 5 | n/a | 298.74 | 331.71 | 2.38% | 1.40 |
+| elec_germany | A | 34 | 5 | n/a | 415.22 | 475.72 | 6.35% | 4.21 |
+| elec_china | A | 34 | 5 | n/a | 109.65 | 146.13 | 2.10% | 0.77 |
 
-rank1/gamma: `n/a` = annual series (period=1, no intra-period structure); `—` = not computed for this run.
+rank1: `n/a` = annual series (period=1, no intra-period structure).
 
 ### Reference
 
@@ -141,5 +140,4 @@ Author: Andyou <andyou@animagram.jp>
 | フィールド | 型 | 説明 |
 |-----------|-----|------|
 | `rank1` | `Option<f64>` | 季節行列の `s[0]²/Σs²`。1.0 = 完全な単一周期性。`None` は period=1（Yearly 等）または系列が短い場合（エラーではない）。 |
-| `gamma` | `Option<f64>` | ランダム行列ベースライン除去後の季節強度。[0, 1]。1.0 = 強い季節性。 |
 | `gcv` | `Option<f64>` | RidgeのLOOCV最小誤差。低いほどLevelが予測しやすい。スケールはBox-Cox変換依存。 |
