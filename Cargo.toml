@@ -17,11 +17,8 @@ std = []
 libm = "0.2"
 
 [dev-dependencies]
-nalgebra   = "0.33"
-log        = "0.4"
-env_logger = "0.11"
+nalgebra = "0.35"
 
 [lib]
 name = "flair"
 path = "src/lib.rs"
-crate-type = ["rlib"]

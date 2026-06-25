@@ -17,7 +17,6 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 - [FLAIR Algorithm Paperar: Xiv:2605.07222](https://arxiv.org/abs/2605.07222)
 - [nalgebra 0.35.0](https://github.com/dimforge/nalgebra)
 - [quadrature 0.1.2](https://github.com/Eh2406/quadrature)
-- [LAPACK 3.12.1](https://www.netlib.org/lapack/)
 
 ---
 

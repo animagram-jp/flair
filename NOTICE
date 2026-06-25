@@ -33,7 +33,6 @@ Apache License, Version 2.0.
 ================================================================================
 Files derived from this work:
   - src/constants.rs   (ported from flaircast/_constants.py)
-  - src/frequency.rs   (ported from flaircast/_frequency.py)
 
 Origin:   https://github.com/Mellon-Inc/FLAIR
 License:  Apache License, Version 2.0
