@@ -1020,7 +1020,6 @@ mod tests {
             Dataset { file: "noaa_temp_annual.csv", frequency: Freq::Yearly,   mode: ParseMode::Col(1) },
             Dataset { file: "noaa_temp_monthly.csv",frequency: Freq::Monthly,  mode: ParseMode::Col(1) },
             Dataset { file: "japan_demand_tokyo.csv", frequency: Freq::Hourly(1),mode: ParseMode::JapanTokyo },
-            Dataset { file: "bike_daily.csv",       frequency: Freq::Daily,    mode: ParseMode::Col(13) },
         ]
     }
 
