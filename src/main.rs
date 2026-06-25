@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#[path = "svd_new.rs"]
 mod svd;
 
 fn main() {

@@ -195,7 +195,7 @@ mod tests {
         let s_na: Vec<f64> = svd_na.singular_values.iter().map(|&v| v as f64).collect();
 
         // 自前 singvals
-        let s_rs: Vec<f64> = crate::svd::singvals(&mat);
+        let s_rs: Vec<f64> = crate::svd::svdvals(&mat);
 
         // s[0]（信号強度）は高精度で一致すること（0.1%以内）
         let rel0 = (s_na[0] - s_rs[0]).abs() / s_na[0];

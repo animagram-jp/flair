@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod flair;
 pub mod optshrink;
+#[path = "svd_new.rs"]
 pub mod svd;
 
 pub use flair::{forecast, forecast_mean, forecast_quantiles};

@@ -101,7 +101,7 @@ impl Flair for FlairStruct {
             (0..horizon).map(|h| {
                 let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
                 col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-                let idx = (q * (n_samples - 1) as f64).round() as usize;
+                let idx = round(q * (n_samples - 1) as f64) as usize;
                 col[idx]
             }).collect()
         }).collect();
@@ -289,7 +289,7 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> Result<(Vec<f64>, Vec<f64>, f64),
     let m = x_rows.len();
     let nf = x_rows[0].len();
 
-    let (u, s, vt) = svd::full(x_rows).map_err(Error::Svd)?;
+    let (u, s, vt) = svd::svd(x_rows);
     let k = s.len();
 
     let s2: Vec<f64> = s.iter().map(|&v| v * v).collect();
@@ -383,7 +383,7 @@ fn select_period(y: &[f64], n: usize, frequency: &Freq) -> (usize, Vec<usize>, u
             let start = y_sel.len() - nc * p_cand;
             let y_use = &y_sel[start..];
             let mat_c: Vec<Vec<f64>> = (0..p_cand).map(|ph| (0..nc).map(|ci| y_use[ci * p_cand + ph]).collect()).collect();
-            let s = svd::singvals(&mat_c);
+            let s = svd::svdvals(&mat_c);
             let rss1: f64 = s.iter().skip(1).map(|&v| v * v).sum();
             let t = (nc * p_cand) as f64;
             let bic = t * ln((rss1 / t).max(EPS_LOG)) + (p_cand + nc - 1) as f64 * ln(t);
@@ -787,17 +787,17 @@ pub fn forecast(
     }
 
     // Integer snap: 入力が全て整数値なら予測も整数に丸める
-    let is_integer_series = y_raw.iter().filter(|v| !v.is_nan()).all(|&v| v == v.round());
+    let is_integer_series = y_raw.iter().filter(|v| !v.is_nan()).all(|&v| v == round(v));
     if is_integer_series {
         for path in &mut samples {
             for v in path.iter_mut() {
-                *v = v.round();
+                *v = round(*v);
             }
         }
     }
 
     let rank1 = {
-        let s = svd::singvals(&mat);
+        let s = svd::svdvals(&mat);
         let total: f64 = s.iter().map(|&v| v * v).sum();
         if total < EPS || big_p < 2 { None } else { Some(s[0] * s[0] / total) }
     };
