@@ -12,6 +12,7 @@ use core::{
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod constants;
 pub mod double_exponential;
 pub mod flair;
 pub mod optshrink;
@@ -35,12 +36,12 @@ pub fn seed_from_time() -> u64 {
 
 pub trait Flair {
     fn forecast(
-            y: &[f64], // 時系列データ
-            frequency: &Freq, // データの周波数
-            horizon: usize, // 何ステップ先まで予測するか
-            n_samples: usize, //  サンプルパス本数
-            seed: u64, // 乱数シード。`flair::seed_from_time()`を代入可能
-            covariates: Option<(&[f64], &[f64])>, // (x_historical, x_future) // 
+            y: &[f64],
+            frequency: &Freq,
+            horizon: usize,
+            n_samples: usize,
+            seed: u64,
+            covariates: Option<(&[f64], &[f64])>,
         ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
 
     fn forecast_mean(
@@ -59,7 +60,7 @@ pub trait Flair {
         n_samples: usize,
         seed: u64,
         covariates: Option<(&[f64], &[f64])>,
-        quantiles: &[f64], // 各パーセンタイル（0.0〜1.0)
+        quantiles: &[f64],
     ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
 }
 
@@ -75,11 +76,11 @@ pub enum Freq {
 }
 
 pub struct Confidence {
-    pub rank1: Option<f64>,  // σ₁²/Σσᵢ² — rank-1構造の強さ（1.0=完全な単一周期性、~1/P=フラット）
-    pub gcv:   Option<f64>,  // RidgeのLOOCV最小誤差 — Levelの予測可能性。低いほど良い
-    // rank1がNoneになるケース:
-    //   - Yearly（P=1、季節分解なし）
-    //   - 系列が短くてMIN_COMPLETE周期に満たない
+    /// sigma_1^2 / sum(sigma_i^2): rank-1 signal strength (1.0 = single period, ~1/P = flat).
+    /// None for Yearly (P=1) or series too short for the Level x Shape decomposition.
+    pub rank1: Option<f64>,
+    /// Minimum Ridge LOOCV error; lower is more predictable.
+    pub gcv:   Option<f64>,
 }
 
 // ============================================================
@@ -88,8 +89,8 @@ pub struct Confidence {
 
 #[derive(Debug, Clone)]
 pub enum Error {
-    InvalidFreq(usize),         // Freq::new() に無効な間隔が渡された
-    InvalidInput(&'static str), // y が空など
+    InvalidFreq(usize),
+    InvalidInput(&'static str),
     Svd(SvdError),
 }
 

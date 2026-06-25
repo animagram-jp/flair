@@ -2,6 +2,10 @@
 
 # flair
 
+## Rule
+
+- [common for repositories](https://github.com/animagram-jp/.github/blob/main/Rule.md)
+
 ## Test
 
 ```sh

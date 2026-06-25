@@ -1,46 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// このファイルは FLAIR (flaircast) (Copyright 2026 Takato Honda, Apache-2.0)
-// の flaircast/_constants.py を Rust へ移植したものです。詳細は同梱の NOTICE を参照。
+// Ported from FLAIR (flaircast) (Copyright 2026 Takato Honda, Apache-2.0).
+// Source: flaircast/_constants.py
+// See the bundled NOTICE for details.
 
-/// FLAIR数値定数。
-///
-/// 出典: flaircast/_constants.py (Apache-2.0)
-/// https://github.com/Mellon-Inc/FLAIR/blob/main/flaircast/_constants.py
-
-/// 汎用ゼロ除算ガード
+/// General-purpose division guard.
 pub const EPS: f64 = 1e-10;
-/// Box-Cox入力のフロア (log(非正) を防ぐ)
+/// Floor for Box-Cox input; prevents log of a non-positive number.
 pub const EPS_BOXCOX: f64 = 1e-8;
-/// BIC計算の log() フロア
+/// Floor inside log() to avoid -inf in BIC calculations.
 pub const EPS_LOG: f64 = 1e-30;
-/// LOOCV soft-average でスキップするsoftmax重みの閾値
+/// Softmax weight threshold below which a candidate is skipped in LOOCV soft-average.
 pub const EPS_WEIGHT: f64 = 1e-15;
-/// Shape比率のフロア (乗法分解のゼロ除算防止)
+/// Floor for Shape proportions; keeps the multiplicative decomposition away from divide-by-zero.
 pub const EPS_SHAPE: f64 = 1e-6;
 
-/// 逆Box-Cox (lam=0) の exp() クリップ上限
+/// Clip range for exp() in the inverse Box-Cox path (lam = 0).
 pub const BC_EXP_CLIP: f64 = 30.0;
-/// Box-Cox lambda推定に必要な正値観測の最小数
+/// Minimum positive observations required to estimate Box-Cox lambda.
 pub const MIN_POSITIVE_FOR_BC: usize = 10;
 
-/// 周期分解に必要な完全周期の最小数 (未満でP=1フォールバック)
+/// Minimum complete periods required for the Level x Shape decomposition; below this, P = 1.
 pub const MIN_COMPLETE: usize = 3;
-/// 完全周期の上限 (メモリ・速度ガード)
+/// Cap on complete periods (memory and speed guard).
 pub const MAX_COMPLETE: usize = 500;
 
-/// true のとき Level Ridge は ΔL_innov を予測 (ランダムウォーク事前分布)
+/// When true, the Level Ridge fits delta(L_innov) — random-walk prior on beta_2.
 pub const DIFF_TARGET: bool = true;
 
-/// Shape推定に使う直近周期数
+/// Number of recent periods used for Shape estimation.
 pub const SHAPE_K: usize = 2;
 
-/// フェーズノイズ残差行列に使う直近周期数
+/// Number of recent periods used for the phase-noise residual matrix.
 pub const PHASE_NOISE_K: usize = 50;
 
-/// Ridge LOOCV soft-average のα候補数
+/// Number of alpha candidates in the Ridge LOOCV soft-average grid.
 pub const N_ALPHAS: usize = 25;
-/// αグリッドの log10 下限
+/// log10 of the minimum Ridge alpha.
 pub const ALPHA_LOG_MIN: f64 = -4.0;
-/// αグリッドの log10 上限
+/// log10 of the maximum Ridge alpha.
 pub const ALPHA_LOG_MAX: f64 = 4.0;

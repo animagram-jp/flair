@@ -13,7 +13,7 @@ use alloc::{
     vec::Vec,
 };
 use libm::{sqrt, log as ln, exp, pow, sin, cos, round};
-use crate::{svd, Confidence, Error, Flair, Freq};
+use crate::{constants::*, svd, Confidence, Error, Flair, Freq};
 
 // ============================================================
 // Implement
@@ -149,22 +149,7 @@ fn get_periods(frequency: &Freq) -> Vec<usize> {
     }
 }
 
-// ── constants ──────────────────────────────────────────────────────────────
-
-const EPS: f64 = 1e-10;
-const EPS_BOXCOX: f64 = 1e-8;
-const EPS_LOG: f64 = 1e-30;
-const EPS_WEIGHT: f64 = 1e-15;
-const EPS_SHAPE: f64 = 1e-6;
-const BC_EXP_CLIP: f64 = 30.0;
-const MIN_POSITIVE_FOR_BC: usize = 10;
-const MIN_COMPLETE: usize = 3;
-const MAX_COMPLETE: usize = 500;
-const SHAPE_K: usize = 2;
-const PHASE_NOISE_K: usize = 50;
-const N_ALPHAS: usize = 25;
-const ALPHA_LOG_MIN: f64 = -4.0;
-const ALPHA_LOG_MAX: f64 = 4.0;
+// constants imported via `use crate::constants::*`
 
 // ── PRNG: xorshift64 + Box-Muller normal ──────────────────────────────────
 
@@ -290,8 +275,8 @@ fn slice_mean(v: &[f64]) -> f64 { v.iter().sum::<f64>() / v.len() as f64 }
 
 // ── Ridge with Soft-Average GCV ────────────────────────────────────────────
 //
-// Returns (beta [nf], loo_residuals [n_train], gcv_min, vt [k×nf], s [k], d_avg [k]).
-// loo は LWCP正規化済み: e_i^LOO / sqrt(1 + h_ii)
+// Returns (beta [nf], loo_residuals [n_train], gcv_min, vt [k x nf], s [k], d_avg [k]).
+// loo is LWCP-normalized: e_i^LOO / sqrt(1 + h_ii)
 // x_rows: row-major design matrix (n_train rows, each of length nf).
 
 fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> Result<(Vec<f64>, Vec<f64>, f64, Vec<Vec<f64>>, Vec<f64>, Vec<f64>), Error> {
@@ -492,7 +477,7 @@ fn estimate_phi(l_bc: &[f64]) -> f64 {
 fn compute_damped_trend(l_bc: &[f64], m: usize, n_complete: usize) -> Vec<f64> {
     let phi = estimate_phi(l_bc).min(1.0 - EPS);
     if phi <= EPS {
-        // phi≈0: 線形外挿（最終ステップ位置を固定）
+        // phi~0: linear extrapolation (fix at last observed position)
         return vec![(n_complete as f64 - 1.0) / n_complete as f64; m];
     }
     (0..m).map(|j| {
@@ -504,7 +489,7 @@ fn compute_damped_trend(l_bc: &[f64], m: usize, n_complete: usize) -> Vec<f64> {
 // ── LWCP leverages (#11) ──────────────────────────────────────────────────
 
 // Per-horizon test-point leverage: h_test[j] = ||Vt @ x_j / s||^2_d_avg
-// x_j は forecast step j のデザイン行ベクトル（point-prediction で更新）
+// x_j is the design row vector for forecast step j, updated via point-prediction.
 fn compute_lwcp_leverages(
     beta: &[f64],
     l_innov: &[f64],
@@ -620,7 +605,7 @@ pub fn forecast(
     if big_p > 1 {
         let (_, max_cp_est) = compute_cross_periods(&secondary, big_p, period, n_complete);
         let start_est = if max_cp_est >= 2 { max_cp_est } else { 1 };
-        let nf_est = 2 + 1 + if max_cp_est >= 2 { 1 } else { 0 }; // nb + n_lag (exog未実装分は0)
+        let nf_est = 2 + 1 + if max_cp_est >= 2 { 1 } else { 0 }; // nb + n_lag (no exog)
         if n_complete.saturating_sub(start_est) < 2 * nf_est {
             big_p = 1;
             secondary.clear();
@@ -680,8 +665,8 @@ pub fn forecast(
     let nf = nb + n_lag;
     let n_train = n_complete - start;
 
-    // #6 LSR1: diff-targetが使えるか（n_train >= 3）
-    let use_diff = n_train >= 3;
+    // #6 LSR1: use diff-target when n_train >= 3
+    let use_diff = DIFF_TARGET && n_train >= 3;
 
     let (x_rows, y_target): (Vec<Vec<f64>>, Vec<f64>) = if use_diff {
         // y_target = diff(l_innov[start-1..])
@@ -690,7 +675,7 @@ pub fn forecast(
             let mut row = vec![0.0f64; nf];
             row[0] = 1.0;
             row[1] = ti as f64 / n_complete as f64;
-            row[nb] = -l_innov[ti - 1]; // 符号反転: δ₂ = 1 - β₂
+            row[nb] = -l_innov[ti - 1]; // sign flip: delta_2 = 1 - beta_2
             if max_cp >= 2 { row[nb + 1] = l_innov[ti - max_cp]; }
             row
         }).collect();
@@ -710,7 +695,7 @@ pub fn forecast(
 
     let (mut beta, loo_resid, gcv_min, vt_r, s_r, d_avg_r) = ridge_sa(&x_rows, &y_target)?;
 
-    // #6 LSR1: β₂ = 1 - δ₂ を復元
+    // #6 LSR1: recover beta_2 = 1 - delta_2
     if use_diff {
         beta[nb] = 1.0 - beta[nb];
     }
@@ -763,7 +748,7 @@ pub fn forecast(
         let ti = n_complete + j;
         for si in 0..n_samples {
             let pred = beta[0]
-                + beta[1] * damped_trend[j]  // #7 線形トレンド → 減衰トレンド
+                + beta[1] * damped_trend[j]  // #7 damped trend
                 + beta[nb] * l_paths[si][ti - 1];
             let pred = if max_cp >= 2 { pred + beta[nb + 1] * l_paths[si][ti - max_cp] } else { pred };
             l_paths[si][ti] = pred + noise_pool[si][j];
@@ -791,7 +776,7 @@ pub fn forecast(
     let k_r = PHASE_NOISE_K.min(n_complete);
 
     // fitted_clamp = max(0.1 * median(|fitted| > EPS), EPS_BOXCOX)
-    // ロバストな分母クランプ。EPS_BOXCOXの固定値だと低水準phaseで残差が爆発する
+    // Robust denominator clamp; a fixed EPS_BOXCOX causes residual blow-up on low-level phases.
     let fitted_clamp = {
         let mut vals: Vec<f64> = Vec::new();
         for ph in 0..big_p {
@@ -830,7 +815,7 @@ pub fn forecast(
         }
     }
 
-    // col_idx[s] = 1列をsampleごとに選び全stepで共有（scenario-coherent）
+    // col_idx[s]: one column per sample, shared across all steps (scenario-coherent).
     let col_idx: Vec<usize> = (0..n_samples).map(|_| rng.randint(k_r)).collect();
 
     // ── Assemble output ─────────────────────────────────────────────────
@@ -851,7 +836,7 @@ pub fn forecast(
         samples.push(path);
     }
 
-    // Clip: 上限は recent window max + range、下限は全期間のfloor（非対称）
+    // Clip: upper = recent max + range, lower = all-time floor (asymmetric).
     let lookback = (horizon * 2).max(PHASE_NOISE_K).min(y_raw.len());
     let valid_rec: Vec<f64> = y_raw[y_raw.len() - lookback..].iter().cloned().filter(|v| !v.is_nan()).collect();
     let valid_all: Vec<f64> = y_raw.iter().cloned().filter(|v| !v.is_nan()).collect();
@@ -873,7 +858,7 @@ pub fn forecast(
         }
     }
 
-    // Integer snap: 入力が全て整数値なら予測も整数に丸める
+    // Integer snap: round forecasts when all inputs are integers.
     let is_integer_series = y_raw.iter().filter(|v| !v.is_nan()).all(|&v| v == round(v));
     if is_integer_series {
         for path in &mut samples {
@@ -1039,18 +1024,16 @@ mod tests {
         ]
     }
 
-    /// LWCP実装のリグレッションテスト。
-    /// Python flaircast 0.6.1 の forecast(seed=0, n_samples=500) との平均予測値比較。
-    /// 許容差: 絶対値で ±15（系列の振れ幅 ~250 の約 6%）。
-    /// seed固定でも確率的なのでタイトにはしない。
+    /// Regression test against Python flaircast 0.6.1 forecast(seed=0, n_samples=500).
+    /// Tolerance +-15 (~6% of the series range ~250); kept loose because sampling is stochastic.
     #[test]
     fn lwcp_vs_python_reference() {
-        // y = 100 + 1.5*t + 20*sin(2π*t/12), t=0..143 (月次・144点)
+        // y = 100 + 1.5*t + 20*sin(2*pi*t/12), t=0..143, monthly, 144 points
         let y: Vec<f64> = (0..144).map(|i| {
             100.0 + 1.5 * i as f64 + 20.0 * sin(2.0 * PI * i as f64 / 12.0)
         }).collect();
 
-        // Python flaircast 0.6.1 参照値 (seed=0, n_samples=500)
+        // Reference values: Python flaircast 0.6.1, seed=0, n_samples=500
         let py_mean = [310.5, 329.0, 343.2, 350.0, 348.1, 338.7,
                        325.0, 311.3, 301.9, 300.0, 306.8, 321.0];
 

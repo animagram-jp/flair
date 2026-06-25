@@ -1,31 +1,29 @@
 //! Gavish-Donoho 2014 optimal Frobenius shrinkage for rank-1 Level.
 //!
 //! Reference: Gavish & Donoho (2014) "The Optimal Hard Threshold for Singular
-//! Values is 4/√3", IEEE Trans. Inf. Theory 60(8), 5040-5053.
+//! Values is 4/sqrt(3)", IEEE Trans. Inf. Theory 60(8), 5040-5053.
 //!
-//! `optshrink_factor(svd_s, P, n_complete)` returns a scalar `c ∈ (0, 1]`
+//! `optshrink_factor(svd_s, P, n_complete)` returns a scalar `c in (0, 1]`
 //! such that `L * c` is the minimax-optimal rank-1 Level estimate under the
-//! spiked rectangular model.  Falls back to `1.0` when the spectrum is
+//! spiked rectangular model. Falls back to `1.0` when the spectrum is
 //! degenerate or the top singular value is subcritical.
 //!
-//! The Marchenko-Pastur median `μ_β` is approximated by a degree-7 minimax
-//! polynomial fit over β ∈ (0, 1], which avoids numerical integration in
-//! `no_std` environments.  Maximum error vs. exact numerical integration:
-//! < 3 × 10⁻⁴ over the full domain.
+//! The Marchenko-Pastur median `mu_beta` is computed via numerical integration
+//! over the MP support using `double_exponential::integrate` and a Brent solver.
 
 use libm::{sqrt, pow, fabs};
-use crate::double_exponential::integrate;
+use crate::{
+    constants::{EPS, EPS_BOXCOX},
+    double_exponential::integrate,
+};
 
-const EPS: f64 = 1e-10;
-const EPS_BOXCOX: f64 = 1e-8;
-
-/// Marchenko-Pastur CDF: Prob(X ≤ m) で 0.5 になる m を返す。
+/// Returns the median of the Marchenko-Pastur distribution at aspect ratio `beta`.
 ///
-/// MP(β) の PDF: f(x) = sqrt((y+ - x)(x - y-)) / (2π·β·x)
-/// y± = (1 ± √β)²、サポート [y-, y+]。
+/// Returns the median of the Marchenko-Pastur distribution at aspect ratio `beta`.
 ///
-/// CDF(m) を double_exponential::integrate で数値積分し、
-/// Brent 法で CDF(m) = 0.5 を満たす m を求める。
+/// PDF: f(x) = sqrt((y_plus - x)(x - y_minus)) / (2*pi*beta*x),
+/// support [y_minus, y_plus] where y_pm = (1 +/- sqrt(beta))^2.
+/// Solved numerically: integrate f from y_minus to m, find m where CDF(m) = 0.5.
 pub fn mp_median(beta: f64) -> f64 {
     if beta <= EPS {
         return 1.0;
@@ -35,7 +33,6 @@ pub fn mp_median(beta: f64) -> f64 {
     let y_minus = (1.0 - sb) * (1.0 - sb);
     let y_plus  = (1.0 + sb) * (1.0 + sb);
 
-    // CDF(m) = ∫_{y-}^{m} f(x) dx
     let mp_cdf = |m: f64| -> f64 {
         if m <= y_minus { return 0.0; }
         if m >= y_plus  { return 1.0; }
@@ -48,16 +45,15 @@ pub fn mp_median(beta: f64) -> f64 {
             m,
             1e-8,
         );
-        // 正規化定数 1/(2π) を掛ける（積分全体が 1 になるよう）
+        // Normalization: total integral of sqrt(...) / (x*b) over support equals 2*pi.
         (result.integral / (2.0 * core::f64::consts::PI)).clamp(0.0, 1.0)
     };
 
-    // Brent 法で CDF(m) = 0.5 を解く
     brent_solve(mp_cdf, y_minus + EPS, y_plus - EPS, 1e-10)
         .unwrap_or((y_minus + y_plus) * 0.5)
 }
 
-/// Brent 法による根探索: f(xa)・f(xb) < 0 を前提に f(x) = target を解く。
+/// Brent root-finding: solves f(x) = 0.5 given f(xa)*f(xb) < 0.
 fn brent_solve<F: Fn(f64) -> f64>(f: F, xa: f64, xb: f64, xtol: f64) -> Option<f64> {
     let target = 0.5;
     let g = |x| f(x) - target;
@@ -109,7 +105,7 @@ fn brent_solve<F: Fn(f64) -> f64>(f: F, xa: f64, xb: f64, xtol: f64) -> Option<f
 /// `big_p`: number of rows (P).
 /// `nc`:    number of columns (n_complete).
 ///
-/// Returns `c ∈ (0, 1]`.  Multiply L by this factor before the Level Ridge.
+/// Returns `c` in `(0, 1]`. Multiply L by this factor before the Level Ridge.
 pub fn optshrink_factor(svd_s: &[f64], big_p: usize, nc: usize) -> f64 {
     if svd_s.len() < 2 || big_p.min(nc) < 2 {
         return 1.0;
@@ -138,7 +134,7 @@ pub fn optshrink_factor(svd_s: &[f64], big_p: usize, nc: usize) -> f64 {
     }
 
     // Gavish-Donoho 2014 Corollary 1 / SIAM 2017 eq. 3.2:
-    //   σ* = (1/√2) · √(A + √(A² − 4β·σ_noise⁴))
+    //   sigma* = (1/sqrt(2)) * sqrt(A + sqrt(A^2 - 4*beta*sigma_noise^4))
     let a = sigma_1 * sigma_1 - (1.0 + beta) * sigma_noise * sigma_noise;
     let disc = a * a - 4.0 * beta * pow(sigma_noise, 4.0);
     if disc <= 0.0 {
@@ -158,9 +154,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    /// mp_median の精度を nalgebra+数値積分なしで検証するため、
-    /// β ∈ {0.1, 0.25, 0.5, 1.0} の既知近似値と比較する。
-    /// Python scipy.integrate.quad で事前計算した参照値。
+    /// Reference values pre-computed via Python flaircast 0.6.1 `_mp_median`.
     #[test]
     fn mp_median_known_betas() {
         // (beta, expected_mu, tol)
@@ -180,7 +174,7 @@ mod tests {
         }
     }
 
-    /// μ_β は常に [(1-√β)², (1+√β)²] の中に入っていること。
+    /// mp_median must always lie within the MP support [(1-sqrt(beta))^2, (1+sqrt(beta))^2].
     #[test]
     fn mp_median_in_support() {
         for i in 1..=20usize {
@@ -193,7 +187,7 @@ mod tests {
         }
     }
 
-    /// degenerate入力は1.0を返すこと。
+    /// Degenerate inputs must return 1.0.
     #[test]
     fn optshrink_degenerate() {
         assert_eq!(optshrink_factor(&[], 10, 10), 1.0);
@@ -202,35 +196,28 @@ mod tests {
         assert_eq!(optshrink_factor(&[0.0, 0.0], 5, 5), 1.0);  // sigma_1 = 0
     }
 
-    /// 信号が雑音閾値以下なら1.0（shrinkなし）。
+    /// When the top singular value is at or below the noise threshold, return 1.0.
     #[test]
     fn optshrink_subcritical_returns_one() {
-        // σ_1 ≈ σ_med ≈ 1.0 → subcritical → factor = 1.0
         let s = vec![1.01, 1.0, 0.99, 0.98];
         assert_eq!(optshrink_factor(&s, 4, 4), 1.0);
     }
 
-    /// 強い rank-1 信号では factor < 1.0 かつ > 0。
+    /// A dominant rank-1 signal must yield factor in (0, 1).
     #[test]
     fn optshrink_strong_signal() {
-        // σ_1 = 100, others ≈ 1 → well above threshold → shrink < 1
         let s = vec![100.0, 1.2, 1.0, 0.9, 0.8];
         let f = optshrink_factor(&s, 5, 50);
         assert!(f > 0.0 && f < 1.0, "expected factor in (0,1), got {f}");
     }
 
-    /// nalgebra の SVD と自前 SVD で optshrink_factor が一致することを検証。
-    /// rank-1 dominant 行列（12×10）を使用。
-    ///
-    /// 注意: この行列は条件数 s[0]/s[1] ≈ 230 の rank-1 dominant 行列なので、
-    /// 小特異値（s[1] 以降）の相対誤差は数値計算の原理的な限界により数%ずれる。
-    /// 個別の特異値精度より optshrink_factor（s[0] と median(s) を使う）の
-    /// 出力値の一致を検証する。
+    /// optshrink_factor agrees between nalgebra SVD and flair SVD on a rank-1 dominant 12x10 matrix.
+    /// The condition number s[0]/s[1] is ~230, so small singular values may differ by a few percent;
+    /// we verify the factor (which uses s[0] and median(s)) rather than individual singular values.
     #[test]
     fn optshrink_nalgebra_svd() {
         use nalgebra::DMatrix;
 
-        // rank-1 signal + noise (12×10)
         let p = 12usize;
         let nc = 10usize;
         let mut mat = vec![vec![0.0f64; nc]; p];
@@ -242,25 +229,19 @@ mod tests {
             }
         }
 
-        // nalgebra SVD で参照値を計算
         let dm = DMatrix::from_fn(p, nc, |r, c| mat[r][c]);
         let svd_na = dm.svd(false, false);
         let s_na: Vec<f64> = svd_na.singular_values.iter().map(|&v| v as f64).collect();
-
-        // 自前 singvals
         let s_rs: Vec<f64> = crate::svd::svdvals(&mat);
 
-        // s[0]（信号強度）は高精度で一致すること（0.1%以内）
         let rel0 = (s_na[0] - s_rs[0]).abs() / s_na[0];
         assert!(rel0 < 0.001, "s[0]: nalgebra={:.4} flair={:.4} rel={rel0:.4}", s_na[0], s_rs[0]);
 
-        // 両方の特異値で optshrink_factor を計算し、結果が近いこと（5%以内）
         let f_na = optshrink_factor(&s_na, p, nc);
         let f_rs = optshrink_factor(&s_rs, p, nc);
         let diff = (f_na - f_rs).abs();
         assert!(diff < 0.05, "optshrink factor: nalgebra={f_na:.4} flair={f_rs:.4} diff={diff:.4}");
 
-        // rank-1 dominant なので両方とも shrink されるはず
         assert!(f_na > 0.0 && f_na < 1.0, "nalgebra factor out of (0,1): {f_na}");
         assert!(f_rs > 0.0 && f_rs < 1.0, "flair factor out of (0,1): {f_rs}");
     }
