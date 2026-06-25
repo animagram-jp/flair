@@ -13,40 +13,93 @@
 //! `no_std` environments.  Maximum error vs. exact numerical integration:
 //! < 3 × 10⁻⁴ over the full domain.
 
-use libm::{sqrt, pow};
+use libm::{sqrt, pow, fabs};
+use crate::double_exponential::integrate;
 
 const EPS: f64 = 1e-10;
 const EPS_BOXCOX: f64 = 1e-8;
 
-/// Marchenko-Pastur median approximation for aspect ratio β ∈ (0, 1].
+/// Marchenko-Pastur CDF: Prob(X ≤ m) で 0.5 になる m を返す。
 ///
-/// Fitted by minimax polynomial regression against the exact numerical
-/// integral of the MP CDF.  The polynomial is evaluated in β-space after
-/// a √β substitution to linearize the dominant √(1-√β)² behaviour.
+/// MP(β) の PDF: f(x) = sqrt((y+ - x)(x - y-)) / (2π·β·x)
+/// y± = (1 ± √β)²、サポート [y-, y+]。
 ///
-/// Returns μ_β — the median of the MP(β) distribution on [(1-√β)², (1+√β)²].
-/// At β = 0 (degenerate) returns 1.0 (limit of μ_β as β → 0⁺ is 1).
+/// CDF(m) を double_exponential::integrate で数値積分し、
+/// Brent 法で CDF(m) = 0.5 を満たす m を求める。
 pub fn mp_median(beta: f64) -> f64 {
     if beta <= EPS {
         return 1.0;
     }
-    let b = beta.min(1.0_f64);
-    // Polynomial fit in t = sqrt(b), coefficients from minimax regression.
-    // Evaluated: mu_beta ≈ p0 + p1*t + p2*t^2 + ... + p7*t^7
-    // Validated against scipy.integrate.quad over 1000 β points in (0,1].
-    let t = sqrt(b);
-    let mu = 0.9999_f64
-        + t * (-0.6772)
-        + pow(t, 2.0) * 0.5739
-        + pow(t, 3.0) * (-0.7580)
-        + pow(t, 4.0) * 0.9238
-        + pow(t, 5.0) * (-0.7432)
-        + pow(t, 6.0) * 0.3233
-        + pow(t, 7.0) * (-0.0581);
-    // μ_β must lie in [(1-√β)², (1+√β)²]
-    let y_minus = pow(1.0 - sqrt(b), 2.0);
-    let y_plus  = pow(1.0 + sqrt(b), 2.0);
-    mu.clamp(y_minus + EPS, y_plus - EPS)
+    let b = beta.min(1.0);
+    let sb = sqrt(b);
+    let y_minus = (1.0 - sb) * (1.0 - sb);
+    let y_plus  = (1.0 + sb) * (1.0 + sb);
+
+    // CDF(m) = ∫_{y-}^{m} f(x) dx
+    let mp_cdf = |m: f64| -> f64 {
+        if m <= y_minus { return 0.0; }
+        if m >= y_plus  { return 1.0; }
+        let result = integrate(
+            |x| {
+                let num = (y_plus - x) * (x - y_minus);
+                if num <= 0.0 { 0.0 } else { sqrt(num) / (x * b) }
+            },
+            y_minus,
+            m,
+            1e-8,
+        );
+        // 正規化定数 1/(2π) を掛ける（積分全体が 1 になるよう）
+        (result.integral / (2.0 * core::f64::consts::PI)).clamp(0.0, 1.0)
+    };
+
+    // Brent 法で CDF(m) = 0.5 を解く
+    brent_solve(mp_cdf, y_minus + EPS, y_plus - EPS, 1e-10)
+        .unwrap_or((y_minus + y_plus) * 0.5)
+}
+
+/// Brent 法による根探索: f(xa)・f(xb) < 0 を前提に f(x) = target を解く。
+fn brent_solve<F: Fn(f64) -> f64>(f: F, xa: f64, xb: f64, xtol: f64) -> Option<f64> {
+    let target = 0.5;
+    let g = |x| f(x) - target;
+    let mut a = xa;
+    let mut b = xb;
+    let mut fa = g(a);
+    let mut fb = g(b);
+    if fa * fb > 0.0 { return None; }
+    let mut c = a;
+    let mut fc = fa;
+    let mut d = b - a;
+    let mut e = d;
+    for _ in 0..500 {
+        if fb * fc > 0.0 { c = a; fc = fa; d = b - a; e = d; }
+        if fabs(fc) < fabs(fb) { a = b; b = c; c = a; fa = fb; fb = fc; fc = fa; }
+        let tol = 2.0 * f64::EPSILON * fabs(b) + 0.5 * xtol;
+        let m = 0.5 * (c - b);
+        if fabs(m) <= tol || fb == 0.0 { return Some(b); }
+        if fabs(e) >= tol && fabs(fa) > fabs(fb) {
+            let s = fb / fa;
+            let (p, q) = if a == c {
+                (2.0 * m * s, 1.0 - s)
+            } else {
+                let q = fa / fc;
+                let r = fb / fc;
+                (s * (2.0 * m * q * (q - r) - (b - a) * (r - 1.0)),
+                 (q - 1.0) * (r - 1.0) * (s - 1.0))
+            };
+            let (p, q) = if p > 0.0 { (p, -q) } else { (-p, q) };
+            if 2.0 * p < (3.0 * m * q - fabs(tol * q)).min(fabs(e * q)) {
+                e = d; d = p / q;
+            } else {
+                d = m; e = m;
+            }
+        } else {
+            d = m; e = m;
+        }
+        a = b; fa = fb;
+        b += if fabs(d) > tol { d } else if m > 0.0 { tol } else { -tol };
+        fb = g(b);
+    }
+    Some(b)
 }
 
 /// Gavish-Donoho optimal Frobenius shrinkage factor.
@@ -112,11 +165,11 @@ mod tests {
     fn mp_median_known_betas() {
         // (beta, expected_mu, tol)
         let cases = [
-            (0.01_f64, 0.9603, 5e-3),
-            (0.1,      0.6843, 5e-3),
-            (0.25,     0.4929, 5e-3),
-            (0.5,      0.2965, 5e-3),
-            (1.0,      0.1716, 5e-3),
+            (0.01_f64, 0.99667, 5e-3),
+            (0.1,      0.96657, 5e-3),
+            (0.25,     0.91600, 5e-3),
+            (0.5,      0.83047, 5e-3),
+            (1.0,      0.65278, 5e-3),
         ];
         for (beta, expected, tol) in cases {
             let got = mp_median(beta);

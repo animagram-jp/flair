@@ -272,11 +272,11 @@ pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
 /// # Examples
 ///
 /// ```
-/// use quadrature::integrate;
-/// fn integrand(x: f64) -> f64 {
-///     (-x / 5.0).exp() * x.powf(-1.0 / 3.0)
-/// }
-/// let o = integrate(integrand , 0.0, 10.0, 1e-6);
+/// use flair::double_exponential;
+/// let o = double_exponential::integrate(
+///     |x: f64| (-x / 5.0).exp() * x.powf(-1.0 / 3.0),
+///     0.0, 10.0, 1e-6,
+/// );
 /// assert!((o.integral - 3.6798142583691758).abs() <= 1e-6);
 /// ```
 pub fn integrate<F>(f: F, a: f64, b: f64, target_absolute_error: f64) -> Output
