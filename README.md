@@ -13,10 +13,11 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Reference
 
-- [*FLAIR](https://github.com/Mellon-Inc/FLAIR)
-- [Algorithm Paper](https://arxiv.org/abs/2605.07222)
-- [LAPACK](https://www.netlib.org/lapack/explore-html)
+- [*Factored Level And Interleaved Ridge](https://github.com/Mellon-Inc/FLAIR)
+- [FLAIR Algorithm Paperar: Xiv:2605.07222](https://arxiv.org/abs/2605.07222)
+- [nalgebra: linear algebra crate](https://github.com/dimforge/nalgebra)
 - [quadrature](https://crates.io/crates/quadrature)
+- [LAPACK](https://www.netlib.org/lapack/explore-html)
 
 ---
 

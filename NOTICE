@@ -44,6 +44,25 @@ modifications within the meaning of Section 4(b) of the Apache License,
 Version 2.0.
 
 ================================================================================
+3. quadrature
+================================================================================
+Files derived from this work:
+  - src/double_exponential.rs  (double-exponential quadrature integration,
+                                ported from the `quadrature` crate)
+
+Origin:   https://crates.io/crates/quadrature
+License:  BSD 2-Clause License
+Notice:   Copyright John D. Cook
+          Originally ported from C++ by John D. Cook:
+          https://www.codeproject.com/kb/recipes/fastnumericalintegration.aspx
+
+This file is a partial clone of the `quadrature` crate, itself a Rust port of
+the "Fast Numerical Integration" C++ code by John D. Cook. Adaptations made
+for this project: `no_std` compatibility (replaced `.ln()` with `libm::log`,
+added `extern crate alloc`), and restructured the test module for `no_std`
+environments.
+
+================================================================================
 Algorithms referenced (no third-party code reproduced)
 ================================================================================
 The following works are referenced for their mathematical algorithms only.

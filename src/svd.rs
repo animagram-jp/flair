@@ -1,790 +1,831 @@
-//! Singular Value Decomposition (Golub-Reinsch algorithm)
-//!
-//! Pure Rust implementation of dense SVD using:
-//! - GEBRD (Householder bidiagonalization)
-//! - DBDSQR (Givens rotation iteration)
-//!
-//! Reference: Golub, G.H., Reinsch, C. (1970)
-//!           "Singular value decomposition and least squares solutions"
-//!           Numerische Mathematik, 14(5), 403-420
+// SPDX-License-Identifier: Apache-2.0
+//
+// このファイルは nalgebra v0.35.0 (Copyright 2020 Sébastien Crozet, Apache-2.0)
+// の派生物（`Vec<f64>` への移植・改変）です。詳細は同梱の NOTICE を参照。
 
-use core::{
-    cmp::Ordering,
-    result::Result,
-};
-use alloc::{
-    vec,
-    vec::Vec,
-};
-use libm::{sqrt, pow};
-use crate::SvdError;
-use crate::dlog;
+extern crate alloc;
+use alloc::vec;
+use alloc::vec::Vec;
+use libm::{sqrt, fabs, hypot};
 
-/// Compute full thin SVD: A = U * Σ * V^T
+/// SVD (特異値分解) — nalgebra-0.35.0 のアルゴリズムを `Vec<f64>` に移植。
 ///
-/// Returns (U: m×k, s: k, Vt: k×n) where k = min(m, n)
+/// # ライセンス
+/// 元コードは nalgebra v0.35.0 (Apache-2.0) に基づく。
+/// 原典: <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/svd.rs>
+///       <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/bidiagonal.rs>
+///       <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/givens.rs>
 ///
-/// # Arguments
-/// * `a` - Input matrix as Vec<Vec<f64>> (m rows × n columns)
+/// # 端部処理の方針
+/// nalgebra の型システム（`ComplexField` trait、`DefaultAllocator`、
+/// `OMatrix`/`OVector` ジェネリクス）は依存が芋づる式に広がるため、
+/// すべて `Vec<f64>` ベースのスタンドアロン実装に置き換えた。
+/// **アルゴリズムのロジック**（Householder 二重対角化 → Givens 回転 QR イテレーション）
+/// は nalgebra の実装を直接移植している。
 ///
-/// # Example
-/// ```ignore
-/// let a = vec![
-///     vec![1.0, 2.0, 3.0],
-///     vec![4.0, 5.0, 6.0],
-/// ];
-/// let (u, s, vt) = svd::full(&a)?;
-/// ```
-pub fn full(a: &[Vec<f64>]) -> Result<(Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>), SvdError> {
-    // Validate input
-    if a.is_empty() {
-        return Err(SvdError::DimensionMismatch);
-    }
-    let _m = a.len();
-    let n = a[0].len();
+/// # 提供する関数
+/// - [`svd`]     : thin SVD → `(U[m×n], s[n], Vt[n×n])`
+/// - [`svdvals`] : 特異値のみ（`scipy.linalg.svdvals` 相当）
 
-    if n == 0 {
-        return Err(SvdError::DimensionMismatch);
-    }
+// ─────────────────────────────────────────────────────────────────────────────
+// Givens 回転
+//
+// 出典: nalgebra/src/linalg/givens.rs (Apache-2.0)
+// https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/givens.rs
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // Make a mutable copy
-    let mut a_copy = a.to_vec();
-
-    // Stage 1: Bidiagonalization (GEBRD)
-    let state = gebrd(&mut a_copy)?;
-
-    // Stage 2: Diagonalization via Givens rotations (DBDSQR)
-    let (s, u, v) = dbdsqr(&state, 1000)?;
-
-    // Extract thin SVD
-    // U: m × k, S: k, V^T: k × n (where k = min(m, n))
-    let k = s.len();
-
-    // Trim U to m × k
-    let u_thin: Vec<Vec<f64>> = u.iter().map(|row| row[0..k].to_vec()).collect();
-
-    // Trim V to n × k, then transpose to get V^T: k × n
-    let v_thin: Vec<Vec<f64>> = v.iter().map(|row| row[0..k].to_vec()).collect();
-    let vt = transpose(&v_thin);
-
-    Ok((u_thin, s, vt))
+/// Givens 回転 `G` — `G * [a, b]^T = [r, 0]^T` を成立させる `(c, s)`。
+#[derive(Clone, Copy, Debug)]
+struct Givens {
+    c: f64,
+    s: f64,
 }
 
-/// Compute singular values only
-///
-/// # Arguments
-/// * `a` - Input matrix as Vec<Vec<f64>> (m rows × n columns)
-///
-/// # Returns
-/// Vector of singular values in descending order
-pub fn singvals(a: &[Vec<f64>]) -> Vec<f64> {
-    if a.is_empty() || a[0].is_empty() {
-        return Vec::new();
+impl Givens {
+    fn identity() -> Self {
+        Self { c: 1.0, s: 0.0 }
     }
 
-    let mut a_copy = a.to_vec();
-    let state = match gebrd(&mut a_copy) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    match dbdsqr(&state, 1000) {
-        Ok((s, _, _)) => s,
-        Err(_) => Vec::new(),
-    }
-}
-
-// ── Internal helper functions ────────────────────────────────────────────────
-
-/// Transpose a matrix
-fn transpose(a: &Vec<Vec<f64>>) -> Vec<Vec<f64>> {
-    if a.is_empty() {
-        return vec![];
-    }
-    let m = a.len();
-    let n = a[0].len();
-    let mut result = vec![vec![0.0; m]; n];
-    for i in 0..m {
-        for j in 0..n {
-            result[j][i] = a[i][j];
+    /// 正規化前の cosine `c`・sine `s` 成分から Givens 回転を構築し、norm を返す。
+    ///
+    /// nalgebra `GivensRotation::new` / `try_new`（eps=0）の f64 特殊化:
+    /// `sign0 = signum(c)`, `denom = hypot(c, s)`,
+    /// `norm = sign0·denom`, `c_out = |c|/denom`, `s_out = s/norm`。
+    /// `denom == 0` のときは恒等回転と norm=0 を返す。
+    fn new(c: f64, s: f64) -> (Self, f64) {
+        let mod0 = fabs(c);
+        let sign0 = if c >= 0.0 { 1.0 } else { -1.0 };
+        let denom = sqrt(mod0 * mod0 + s * s);
+        if denom > 0.0 {
+            let norm = sign0 * denom;
+            (Self { c: mod0 / denom, s: s / norm }, norm)
+        } else {
+            (Self::identity(), 0.0)
         }
     }
-    result
+
+    /// `G * [a, b]^T = [r, 0]^T` を満たす回転と r を返す（`b == 0` なら None）。
+    ///
+    /// nalgebra `GivensRotation::cancel_y` の f64 特殊化:
+    /// `c = |a|/denom`, `s = -b/(signum(a)·denom)`, `r = signum(a)·denom`,
+    /// `denom = hypot(a, b)`。
+    fn cancel_y(a: f64, b: f64) -> Option<(Self, f64)> {
+        if b == 0.0 {
+            return None;
+        }
+        let mod0 = fabs(a);
+        let sign0 = if a >= 0.0 { 1.0 } else { -1.0 };
+        let denom = sqrt(mod0 * mod0 + b * b);
+        let c = mod0 / denom;
+        let s = -b / (sign0 * denom);
+        let r = sign0 * denom;
+        Some((Self { c, s }, r))
+    }
+
+    /// `G * [a, b]^T = [0, r]^T` を満たす回転と r を返す（`a == 0` なら None）。
+    ///
+    /// nalgebra `GivensRotation::cancel_x` の f64 特殊化:
+    /// `c = |b|/denom`, `s = a·signum(b)/denom`, `r = signum(b)·denom`,
+    /// `denom = hypot(a, b)`。
+    fn cancel_x(a: f64, b: f64) -> Option<(Self, f64)> {
+        if a == 0.0 {
+            return None;
+        }
+        let mod1 = fabs(b);
+        let sign1 = if b >= 0.0 { 1.0 } else { -1.0 };
+        let denom = sqrt(mod1 * mod1 + a * a);
+        let c = mod1 / denom;
+        let s = (a * sign1) / denom;
+        let r = sign1 * denom;
+        Some((Self { c, s }, r))
+    }
+
+    /// 逆回転（転置）。
+    fn inverse(self) -> Self {
+        Self { c: self.c, s: -self.s }
+    }
+
+    /// 列ペア `(ci, cj)` への右作用 `lhs <- lhs * G`。
+    ///
+    /// nalgebra `GivensRotation::rotate_rows` の f64 特殊化:
+    /// `new_ci = c*ci + s*cj`, `new_cj = -s*ci + c*cj`
+    fn rotate_rows(self, mat: &mut [Vec<f64>], ci: usize, cj: usize) {
+        for row in mat.iter_mut() {
+            let a = row[ci];
+            let b = row[cj];
+            row[ci] = self.c * a + self.s * b;
+            row[cj] = -self.s * a + self.c * b;
+        }
+    }
+
+    /// 行ペア `(ri, rj)` への左作用 `rhs <- G * rhs`。
+    ///
+    /// nalgebra `GivensRotation::rotate` の f64 特殊化:
+    /// `new_ri = c*ri - s*rj`, `new_rj = s*ri + c*rj`
+    /// （`rotate_rows` とは s の符号配置が異なる点に注意）
+    fn rotate(self, mat: &mut [Vec<f64>], ri: usize, rj: usize) {
+        let ncols = mat[0].len();
+        for k in 0..ncols {
+            let a = mat[ri][k];
+            let b = mat[rj][k];
+            mat[ri][k] = self.c * a - self.s * b;
+            mat[rj][k] = self.s * a + self.c * b;
+        }
+    }
 }
 
-/// Internal state for bidiagonalization
-struct BidigState {
-    /// Left singular vectors (m × m)
-    u: Vec<Vec<f64>>,
-    /// Right singular vectors (n × n)
-    v: Vec<Vec<f64>>,
-    /// Diagonal elements
-    d: Vec<f64>,
-    /// Super-diagonal elements
-    e: Vec<f64>,
+/// 局所 2×3 サブ行列 `subm` の列ペア `(c0, c1)` への右作用 `subm <- subm * G`。
+///
+/// nalgebra `rot.rotate_rows(subm.fixed_columns_mut::<2>(c0))` 相当（2 行固定）。
+fn subm_rotate_rows(subm: &mut [[f64; 3]; 2], g: Givens, c0: usize, c1: usize) {
+    for r in 0..2 {
+        let a = subm[r][c0];
+        let b = subm[r][c1];
+        subm[r][c0] = g.c * a + g.s * b;
+        subm[r][c1] = -g.s * a + g.c * b;
+    }
 }
 
-/// Householder bidiagonalization: A → B (bidiagonal matrix)
+/// 局所 2×3 サブ行列 `subm` の 2 行への左作用 `subm <- G * subm`、列範囲 `cstart..cend`。
 ///
-/// Stage 1 of Golub-Reinsch SVD.
-/// Reduces general matrix to bidiagonal form via Householder reflections.
+/// nalgebra `rot.rotate(subm.fixed_columns_mut::<2>(cstart))` 相当。
+fn subm_rotate(subm: &mut [[f64; 3]; 2], g: Givens, cstart: usize, cend: usize) {
+    for col in cstart..cend {
+        let a = subm[0][col];
+        let b = subm[1][col];
+        subm[0][col] = g.c * a - g.s * b;
+        subm[1][col] = g.s * a + g.c * b;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Householder 反射 axis の生成
+//
+// 出典: nalgebra/src/linalg/householder.rs `reflection_axis_mut` (Apache-2.0)
+// https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/householder.rs
+//
+// 端部処理: `ComplexField::to_exp` / `unscale_mut` / `normalize_mut` を
+// f64 専用に展開。複素共役は実数では恒等なので省略。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `column` を「`column` を `(±‖column‖, 0, …, 0)` に写す Householder 反射の
+/// **単位 axis**」に置き換える。
 ///
-/// Algorithm:
-/// For i = 1 to min(m, n):
-///   1. Compute Householder reflection H_L to zero below diagonal in column i
-///   2. Apply H_L to A from the left
-///   3. If i < n, compute Householder reflection H_R to zero right of superdiagonal in row i
-///   4. Apply H_R to A from the right
+/// 返り値: `(reflection_norm, not_zero)`。
+/// `reflection_norm` は反射後の第1成分（= diag/off に入る符号付きノルム）。
+/// `not_zero == false` のとき反射は不要（axis は使われない）。
 ///
-/// The original matrix A is overwritten with the bidiagonal matrix B.
-/// The Householder vectors are stored in the lower/upper triangular parts.
-fn gebrd(a: &mut Vec<Vec<f64>>) -> Result<BidigState, SvdError> {
+/// nalgebra `reflection_axis_mut` の f64 特殊化。
+fn reflection_axis_mut(column: &mut [f64]) -> (f64, bool) {
+    let reflection_sq_norm: f64 = column.iter().map(|x| x * x).sum();
+    let reflection_norm = sqrt(reflection_sq_norm);
+
+    // to_exp(): real では (modulus=|x|, sign=signum*(±1), x=0 なら sign=1)
+    let x0 = column[0];
+    let sign = if x0 >= 0.0 { 1.0 } else { -1.0 };
+    let modulus = fabs(x0);
+    let signed_norm = sign * reflection_norm;
+    let factor = (reflection_sq_norm + modulus * reflection_norm) * 2.0;
+    column[0] += signed_norm;
+
+    if factor != 0.0 {
+        let inv = 1.0 / sqrt(factor);
+        for c in column.iter_mut() {
+            *c *= inv;
+        }
+        // 2 段階目の正規化（nalgebra コメント参照: 単位ベクトル性を厳密化）
+        let nrm: f64 = sqrt(column.iter().map(|x| x * x).sum::<f64>());
+        if nrm > 0.0 {
+            let inv2 = 1.0 / nrm;
+            for c in column.iter_mut() {
+                *c *= inv2;
+            }
+        }
+        (-signed_norm, true)
+    } else {
+        (signed_norm, false)
+    }
+}
+
+/// 単位 axis による Householder 反射を行列の列群に適用する。
+///
+/// `col_new = sign · (I − 2·axis·axisᵀ) · col_old`
+/// nalgebra `Reflection::reflect_with_sign` の f64 特殊化（bias = 0）。
+/// `mat` の行範囲 `from_row..` × 列範囲 `from_col..` に作用する。
+fn reflect_cols_with_sign(
+    mat: &mut [Vec<f64>],
+    axis: &[f64],
+    from_row: usize,
+    from_col: usize,
+    ncols: usize,
+    sign: f64,
+) {
+    for j in from_col..ncols {
+        let dot: f64 = axis
+            .iter()
+            .enumerate()
+            .map(|(i, ai)| ai * mat[from_row + i][j])
+            .sum();
+        // factor = sign · (-2) · dot ; col <- factor·axis + sign·col
+        let factor = sign * (-2.0) * dot;
+        for (i, ai) in axis.iter().enumerate() {
+            mat[from_row + i][j] = factor * ai + sign * mat[from_row + i][j];
+        }
+    }
+}
+
+/// 単位 axis による Householder 反射を行列の行群に適用する（右側 / Vt 用）。
+///
+/// `row_new = sign · row_old · (I − 2·axis·axisᵀ)`
+/// nalgebra `Reflection::reflect_rows_with_sign` の f64 特殊化（bias = 0）。
+/// `mat` の行範囲 `from_row..` × 列範囲 `from_col..` に作用する。
+fn reflect_rows_with_sign(
+    mat: &mut [Vec<f64>],
+    axis: &[f64],
+    from_row: usize,
+    nrows: usize,
+    from_col: usize,
+    sign: f64,
+) {
+    for i in from_row..nrows {
+        let dot: f64 = axis
+            .iter()
+            .enumerate()
+            .map(|(j, aj)| aj * mat[i][from_col + j])
+            .sum();
+        let factor = sign * (-2.0) * dot;
+        for (j, aj) in axis.iter().enumerate() {
+            mat[i][from_col + j] = factor * aj + sign * mat[i][from_col + j];
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Householder 二重対角化
+//
+// 出典: nalgebra/src/linalg/bidiagonal.rs `Bidiagonal::new` /
+//       `clear_column_unchecked` / `clear_row_unchecked` (Apache-2.0)
+// https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/bidiagonal.rs
+//
+// 端部処理: `OMatrix` を `Vec<Vec<f64>>` に置き換え。
+// アルゴリズム（reflection_axis_mut → reflect_with_sign）は原典に厳密一致。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `a` を Householder 反射で上二重対角形式に変換し、
+/// U, Vt 生成に必要な**単位 axis** 群を返す。
+///
+/// 返り値:
+/// - `diag`: 対角要素（符号付き、長さ n）
+/// - `off` : 超対角要素（符号付き、長さ n-1）
+/// - `u_axes` : U 側の単位 axis 群（各 `(col, from_row, axis)`）
+/// - `vt_axes`: Vt 側の単位 axis 群（各 `(row, from_col, axis)`）
+fn bidiagonalize(
+    a: &[Vec<f64>],
+) -> (Vec<f64>, Vec<f64>, Vec<(usize, usize, Vec<f64>)>, Vec<(usize, usize, Vec<f64>)>) {
     let m = a.len();
-    if m == 0 {
-        return Err(SvdError::DimensionMismatch);
-    }
     let n = a[0].len();
-    if n == 0 {
-        return Err(SvdError::DimensionMismatch);
+    let mut work: Vec<Vec<f64>> = a.to_vec();
+    let mut diag = vec![0.0f64; n];
+    let mut off = vec![0.0f64; n.saturating_sub(1)];
+    let mut u_axes: Vec<(usize, usize, Vec<f64>)> = Vec::new();
+    let mut vt_axes: Vec<(usize, usize, Vec<f64>)> = Vec::new();
+
+    // nalgebra の `Bidiagonal::new` は upper_diagonal = (m >= n) で分岐する。
+    // flair の対象行列は m >= n なので upper_diagonal = true のパスのみ実装する。
+    assert!(m >= n, "bidiagonalize: m >= n が必要");
+
+    for k in 0..n {
+        // ── 左 Householder: 列 k の行 k.. をゼロ化（clear_column_unchecked）──
+        let mut axis: Vec<f64> = (k..m).map(|i| work[i][k]).collect();
+        let (reflection_norm, not_zero) = reflection_axis_mut(&mut axis);
+        diag[k] = reflection_norm;
+        if not_zero {
+            // 右側部分行列 work[k.., k+1..] に sign = signum(reflection_norm) で反射
+            let sign = if reflection_norm >= 0.0 { 1.0 } else { -1.0 };
+            reflect_cols_with_sign(&mut work, &axis, k, k + 1, n, sign);
+            u_axes.push((k, k, axis));
+        }
+
+        // ── 右 Householder: 行 k の列 k+1.. をゼロ化（clear_row_unchecked）──
+        if k + 1 < n {
+            let mut axis: Vec<f64> = (k + 1..n).map(|j| work[k][j]).collect();
+            let (reflection_norm, not_zero) = reflection_axis_mut(&mut axis);
+            // nalgebra は axis.conjugate_mut() するが real では恒等。
+            off[k] = reflection_norm;
+            if not_zero {
+                // 下側部分行列 work[k+1.., k+1..] に
+                // sign = signum(reflection_norm).conjugate() = signum で反射（行作用）
+                let sign = if reflection_norm >= 0.0 { 1.0 } else { -1.0 };
+                reflect_rows_with_sign(&mut work, &axis, k + 1, m, k + 1, sign);
+                vt_axes.push((k, k + 1, axis));
+            }
+        }
     }
 
-    // Initialize U and V as identity matrices
-    let mut u = vec![vec![0.0; m]; m];
-    let mut v = vec![vec![0.0; n]; n];
-    for i in 0..m {
+    (diag, off, u_axes, vt_axes)
+}
+
+/// 保存された単位 axis 群から U (m×n) を組み立てる。
+///
+/// nalgebra `Bidiagonal::u()` に厳密一致:
+/// 逆順に各反射を `reflect_with_sign(sign = signum(diag[i]))` で適用する。
+fn assemble_u(
+    m: usize,
+    n: usize,
+    diag: &[f64],
+    u_axes: &[(usize, usize, Vec<f64>)],
+) -> Vec<Vec<f64>> {
+    // res = identity_generic(m, min(m,n)=n) の m×n 単位行列
+    let mut u = vec![vec![0.0f64; n]; m];
+    for i in 0..n {
         u[i][i] = 1.0;
     }
+    for &(col, from_row, ref axis) in u_axes.iter().rev() {
+        let sign = if diag[col] >= 0.0 { 1.0 } else { -1.0 };
+        // res.view_range_mut(from_row.., col..) に列作用
+        reflect_cols_with_sign(&mut u, axis, from_row, col, n, sign);
+    }
+    u
+}
+
+/// 保存された単位 axis 群から Vt (n×n) を組み立てる。
+///
+/// nalgebra `Bidiagonal::v_t()` に厳密一致:
+/// 逆順に各反射を `reflect_rows_with_sign(sign = signum(off[i]))` で適用する。
+fn assemble_vt(
+    n: usize,
+    off: &[f64],
+    vt_axes: &[(usize, usize, Vec<f64>)],
+) -> Vec<Vec<f64>> {
+    // res = identity_generic(min(m,n)=n, n) の n×n 単位行列
+    let mut vt = vec![vec![0.0f64; n]; n];
     for i in 0..n {
-        v[i][i] = 1.0;
+        vt[i][i] = 1.0;
+    }
+    for &(row, from_col, ref axis) in vt_axes.iter().rev() {
+        let sign = if off[row] >= 0.0 { 1.0 } else { -1.0 };
+        // res.view_range_mut(row.., from_col..) に行作用
+        reflect_rows_with_sign(&mut vt, axis, row, n, from_col, sign);
+    }
+    vt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wilkinson シフト
+//
+// 出典: nalgebra/src/linalg/symmetric_eigen.rs `wilkinson_shift` (Apache-2.0)
+// https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/symmetric_eigen.rs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 2×2 対称行列 `[[tmm, tmn], [tmn, tnn]]` の `tnn` に近い固有値（Wilkinson シフト）。
+#[inline]
+fn wilkinson_shift(tmm: f64, tnn: f64, tmn: f64) -> f64 {
+    let d = (tmm - tnn) * 0.5;
+    let sign_d = if d >= 0.0 { 1.0 } else { -1.0 };
+    tnn - sign_d * tmn * tmn / (fabs(d) + sqrt(d * d + tmn * tmn))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2×2 上三角 SVD
+//
+// 出典: nalgebra/src/linalg/svd.rs `compute_2x2_uptrig_svd` (Apache-2.0)
+// 論文: Qiao & Wang, "Computing the Singular Values of 2-by-2 Complex Matrices"
+// http://www.cas.mcmaster.ca/sqrl/papers/sqrl5.pdf
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 2×2 上三角行列 `[[m11, m12], [0, m22]]` の SVD。
+///
+/// 返り値: `(u_rot, [s1, s2], vt_rot)` — s1, s2 は特異値。
+fn svd_2x2_uptrig(
+    m11: f64,
+    m12: f64,
+    m22: f64,
+    compute_u: bool,
+    compute_v: bool,
+) -> (Option<Givens>, [f64; 2], Option<Givens>) {
+    let denom = hypot(m11 + m22, m12) + hypot(m11 - m22, m12);
+
+    // v1 は m22 に最も近い特異値（cancellation 回避のため; 原典 NOTE 参照）。
+    let mut v1 = m11 * m22 * 2.0 / denom;
+    let mut v2 = 0.5 * denom;
+
+    let mut u_rot = None;
+    let mut v_rot = None;
+
+    if compute_u || compute_v {
+        // 原典は GivensRotation::new（cancel_y ではない）。norm（sgn_v）をそのまま乗算。
+        let (csv, sgn_v) = Givens::new(m11 * m12, v1 * v1 - m11 * m11);
+        v1 *= sgn_v;
+        v2 *= sgn_v;
+
+        if compute_v {
+            v_rot = Some(csv);
+        }
+
+        let cu = (m11 * csv.c + m12 * csv.s) / v1;
+        let su = (m22 * csv.s) / v1;
+        let (csu, sgn_u) = Givens::new(cu, su);
+        v1 *= sgn_u;
+        v2 *= sgn_u;
+
+        if compute_u {
+            u_rot = Some(csu);
+        }
     }
 
-    let mut d = vec![0.0; m.min(n)];
-    let mut e = vec![0.0; (m.min(n) - 1).max(0)];
+    (u_rot, [v1, v2], v_rot)
+}
 
-    // Householder bidiagonalization
-    let min_mn = m.min(n);
+// ─────────────────────────────────────────────────────────────────────────────
+// サブ問題の区切り + Givens でのゼロ化
+//
+// 出典: nalgebra/src/linalg/svd.rs `delimit_subproblem` /
+//       `cancel_horizontal_off_diagonal_elt` /
+//       `cancel_vertical_off_diagonal_elt` (Apache-2.0)
+// ─────────────────────────────────────────────────────────────────────────────
 
-    for i in 0..min_mn {
-        // ---- Left Householder reflection (zero below diagonal in column i) ----
-        if i < m - 1 {
-            let col = (i..m).map(|r| a[r][i]).collect::<Vec<_>>();
-            let (hv, tau, beta) = householder_vector(&col);
-            d[i] = beta;
-
-            if tau.abs() > 1e-15 {
-                apply_householder_left(a, tau, &hv, i, m, n);
-                apply_householder_left_to_u(&mut u, tau, &hv, i, m);
+fn cancel_horizontal(
+    diag: &mut [f64],
+    off: &mut [f64],
+    u: &mut Option<Vec<Vec<f64>>>,
+    _vt: &mut Option<Vec<Vec<f64>>>,
+    i: usize,
+    end: usize,
+) {
+    let mut vx = off[i];
+    let mut vy = diag[i + 1];
+    off[i] = 0.0;
+    for k in i..end {
+        if let Some((rot, norm)) = Givens::cancel_x(vx, vy) {
+            diag[k + 1] = norm;
+            // upper_diagonal = true → U 側を更新
+            if let Some(u) = u {
+                rot.inverse().rotate_rows(u, i, k + 1);
+            }
+            if k + 1 != end {
+                vx = -rot.s * off[k + 1];
+                vy = diag[k + 2];
+                off[k + 1] *= rot.c;
             }
         } else {
-            d[i] = a[i][i];
+            break;
         }
+    }
+}
 
-        // ---- Right Householder reflection (zero right of superdiagonal in row i) ----
-        if i < n - 1 {
-            let row = (i + 1..n).map(|c| a[i][c]).collect::<Vec<_>>();
-            let (hv, tau, beta) = householder_vector(&row);
-            if i < e.len() {
-                e[i] = beta;
+fn cancel_vertical(
+    diag: &mut [f64],
+    off: &mut [f64],
+    _u: &mut Option<Vec<Vec<f64>>>,
+    vt: &mut Option<Vec<Vec<f64>>>,
+    i: usize,
+) {
+    let mut vx = diag[i];
+    let mut vy = off[i];
+    off[i] = 0.0;
+    for k in (0..=i).rev() {
+        if let Some((rot, norm)) = Givens::cancel_y(vx, vy) {
+            diag[k] = norm;
+            // upper_diagonal = true → Vt 側を更新
+            if let Some(vt) = vt {
+                rot.rotate(vt, k, i + 1);
             }
-
-            if tau.abs() > 1e-15 {
-                apply_householder_right(a, tau, &hv, i, m, n);
-                apply_householder_right_to_v(&mut v, tau, &hv, i, n);
+            if k > 0 {
+                vx = diag[k - 1];
+                vy = rot.s * off[k - 1];
+                off[k - 1] *= rot.c;
             }
-        }
-    }
-
-    Ok(BidigState { u, v, d, e })
-}
-
-/// Compute Householder reflector for vector x.
-///
-/// Returns (v, tau, beta) where:
-/// - v  = Householder vector (same length as x, with v[0] = x[0] - alpha)
-/// - tau = 2 / (v^T v)   (scalar for H = I - tau * v * v^T)
-/// - beta = alpha = sign(x[0]) * norm(x)  (the resulting first element)
-///
-/// H * x = [beta, 0, ..., 0]^T
-fn householder_vector(x: &[f64]) -> (Vec<f64>, f64, f64) {
-    if x.is_empty() {
-        return (vec![], 0.0, 0.0);
-    }
-
-    let norm_x = sqrt(x.iter().map(|v| v * v).sum::<f64>());
-
-    if norm_x == 0.0 {
-        return (x.to_vec(), 0.0, 0.0);
-    }
-
-    // alpha = sign(x[0]) * norm(x)  — choose sign to avoid cancellation
-    let alpha = if x[0] >= 0.0 { norm_x } else { -norm_x };
-    let beta = alpha;
-
-    // Householder vector v = x with v[0] replaced by (x[0] - alpha)
-    let mut v = x.to_vec();
-    v[0] -= alpha;
-
-    let v_norm_sq: f64 = v.iter().map(|&vi| vi * vi).sum();
-
-    if v_norm_sq < 1e-30 {
-        return (v, 0.0, beta);
-    }
-
-    let tau = 2.0 / v_norm_sq;
-    (v, tau, beta)
-}
-
-/// Apply Householder reflection from the left: A[row_start:m, :] := (I - tau*v*v^T) * A[row_start:m, :]
-/// v is 0-based and covers rows row_start..m
-fn apply_householder_left(a: &mut Vec<Vec<f64>>, tau: f64, v: &[f64], row_start: usize, m: usize, n: usize) {
-    if tau.abs() < 1e-15 {
-        return;
-    }
-    for j in 0..n {
-        let dot: f64 = (row_start..m).map(|i| v[i - row_start] * a[i][j]).sum();
-        let w_j = tau * dot;
-        for i in row_start..m {
-            a[i][j] -= w_j * v[i - row_start];
-        }
-    }
-}
-
-/// Accumulate left Householder reflector into U: U := U * H
-/// where H = I - tau * v * v^T acts on rows row_start..m.
-/// U is m×m; columns row_start..m of each row are updated.
-fn apply_householder_left_to_u(u: &mut Vec<Vec<f64>>, tau: f64, v: &[f64], row_start: usize, m: usize) {
-    if tau.abs() < 1e-15 {
-        return;
-    }
-    // U := U * H  ⟺  for each row i: u[i, row_start..m] -= tau * (u[i, row_start..m] · v) * v
-    for i in 0..m {
-        let dot: f64 = (row_start..m).map(|j| u[i][j] * v[j - row_start]).sum();
-        let w = tau * dot;
-        for j in row_start..m {
-            u[i][j] -= w * v[j - row_start];
-        }
-    }
-}
-
-/// Apply Householder reflection from the right: A[:, col_start+1:n] := A[:, col_start+1:n] * (I - tau*w*w^T)
-/// w is 0-based and covers columns col_start+1..n
-fn apply_householder_right(a: &mut Vec<Vec<f64>>, tau: f64, w: &[f64], col_start: usize, m: usize, n: usize) {
-    if tau.abs() < 1e-15 {
-        return;
-    }
-    for i in 0..m {
-        let dot: f64 = (col_start + 1..n).map(|j| a[i][j] * w[j - col_start - 1]).sum();
-        let z_i = tau * dot;
-        for j in col_start + 1..n {
-            a[i][j] -= z_i * w[j - col_start - 1];
-        }
-    }
-}
-
-/// Apply Householder reflection from the right to V: V[:, col_start+1:n] := V[:, col_start+1:n] * (I - tau*w*w^T)
-fn apply_householder_right_to_v(v: &mut Vec<Vec<f64>>, tau: f64, w: &[f64], col_start: usize, n: usize) {
-    if tau.abs() < 1e-15 {
-        return;
-    }
-    for i in 0..n {
-        let dot: f64 = (col_start + 1..n).map(|j| v[i][j] * w[j - col_start - 1]).sum();
-        let z_i = tau * dot;
-        for j in col_start + 1..n {
-            v[i][j] -= z_i * w[j - col_start - 1];
-        }
-    }
-}
-
-/// 2×2 bidiagonal SVD (LAPACK DLASV2 直訳)
-///
-/// 入力: 上 bidiagonal [[f, g], [0, h]]
-/// 出力: (ssmax, ssmin, snr, csr, snl, csl)
-///   U^T * [[f,g],[0,h]] * V = diag(ssmax, ssmin)
-///   U = [[csl,-snl],[snl,csl]], V = [[csr,-snr],[snr,csr]]
-///
-/// LAPACK DLASV2 l.39–181 の直訳。三角関数を一切使わない。
-fn dlasv2(f: f64, g: f64, h: f64) -> (f64, f64, f64, f64, f64, f64) {
-    let mut ft = f;
-    let mut fa = ft.abs();
-    let mut ht = h;
-    let mut ha = ht.abs();
-
-    // PMAX: 1=F最大, 2=G最大, 3=H最大
-    let mut pmax = 1usize;
-    let swap = ha > fa;
-    if swap {
-        pmax = 3;
-        core::mem::swap(&mut ft, &mut ht);
-        core::mem::swap(&mut fa, &mut ha);
-        // Now fa >= ha
-    }
-    let gt = g;
-    let ga = gt.abs();
-
-    let (ssmin, ssmax, clt, slt, crt, srt);
-
-    if ga == 0.0 {
-        // 対角行列
-        ssmin = ha;
-        ssmax = fa;
-        clt = 1.0;
-        slt = 0.0;
-        crt = 1.0;
-        srt = 0.0;
-    } else {
-        let mut gasmal = true;
-        if ga > fa {
-            pmax = 2;
-            // ga が機械イプシロンより fa/ga が小さい → 超大 GA ケース
-            if (fa / ga) < 2.22e-16_f64 {
-                gasmal = false;
-                ssmax = ga;
-                ssmin = if ha > 1.0 { fa / (ga / ha) } else { (fa / ga) * ha };
-                clt = 1.0;
-                slt = ht / gt;
-                srt = 1.0;
-                crt = ft / gt;
-                // goto 結果へ（下の if gasmal をスキップ）
-                let (csl, snl, csr, snr): (f64, f64, f64, f64) = if swap {
-                    (srt, crt, slt, clt)
-                } else {
-                    (clt, slt, crt, srt)
-                };
-                let tsign = if pmax == 1 {
-                    csr.signum() * csl.signum() * f.signum()
-                } else if pmax == 2 {
-                    snr.signum() * csl.signum() * g.signum()
-                } else {
-                    snr.signum() * snl.signum() * h.signum()
-                };
-                let ssmax_out = ssmax.copysign(tsign);
-                let ssmin_out = ssmin.copysign(tsign * f.signum() * h.signum());
-                return (ssmax_out, ssmin_out, csr, snr, csl, snl);
-            }
-        }
-        if gasmal {
-            // 通常ケース (LAPACK l.96–157)
-            let d = fa - ha;
-            let l = if d == fa { 1.0 } else { d / fa };  // 0 <= l <= 1
-            let m = gt / ft;                               // |m| <= 1/eps
-            let t = 2.0 - l;                               // t >= 1
-            let mm = m * m;
-            let tt = t * t;
-            let s = sqrt(tt + mm);                         // 1 <= s <= 1+1/eps
-            let r = if l == 0.0 { m.abs() } else { sqrt(l * l + mm) }; // 0 <= r <= 1+1/eps
-            let a = 0.5 * (s + r);                         // 1 <= a <= 1+|m|
-            ssmin = ha / a;
-            ssmax = fa * a;
-            let t2 = if mm == 0.0 {
-                if l == 0.0 {
-                    2.0_f64.copysign(ft) * gt.signum()
-                } else {
-                    gt / d.copysign(ft) + m / t
-                }
-            } else {
-                (m / (s + t) + m / (r + l)) * (1.0 + a)
-            };
-            let l2 = sqrt(t2 * t2 + 4.0);
-            crt = 2.0 / l2;
-            srt = t2 / l2;
-            clt = (crt + srt * m) / a;
-            slt = (ht / ft) * srt / a;
         } else {
-            unreachable!()
+            break;
         }
     }
-
-    // swap 補正 (LAPACK l.159–168)
-    let (csl, snl, csr, snr) = if swap {
-        (srt, crt, slt, clt)
-    } else {
-        (clt, slt, crt, srt)
-    };
-
-    // 符号補正 (LAPACK l.173–180)
-    let tsign = if pmax == 1 {
-        csr.signum() * csl.signum() * f.signum()
-    } else if pmax == 2 {
-        snr.signum() * csl.signum() * g.signum()
-    } else {
-        snr.signum() * snl.signum() * h.signum()
-    };
-    let ssmax_out = ssmax.copysign(tsign);
-    let ssmin_out = ssmin.copysign(tsign * f.signum() * h.signum());
-
-    // 呼び出し側は (sigmx, sigmn, cosr, sinr, cosl, sinl) の順を期待
-    // LAPACK DLASV2 出力: ssmax, ssmin, snr, csr, snl, csl
-    //   csr=cosr, snr=sinr, csl=cosl, snl=sinl
-    (ssmax_out, ssmin_out, csr, snr, csl, snl)
 }
 
-/// Golub-Reinsch bidiagonal SVD (LAPACK DBDSQR 準拠)
-///
-/// LAPACK との対応:
-///   - idir: 双方向 sweep (大端→小端 or 小端→大端を条件で切替)
-///   - sminoa/mu 連鎖: 前向き・後向き相対収束判定
-///   - ll == p-1 末端2×2: dlasv2 で直接処理
-///   - MAXITR = 6*k でイテレーション上限
-fn dbdsqr(state: &BidigState, _max_iter: usize) -> Result<(Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>), SvdError> {
-    let m = state.u.len();
-    let n = state.v.len();
-    let k = state.d.len();
-
-    let mut u = state.u.clone();
-    let mut v = state.v.clone();
-    let mut d = state.d.clone();
-    let mut e = state.e.clone();
-    while e.len() < k { e.push(0.0); }
-
-    dlog!("dbdsqr", "start k={k} d={d:.4?} e={e:.4?}", d = &d, e = &e[..k-1]);
-
-    if k == 0 { return Ok((d, u, v)); }
-    if k == 1 {
-        if d[0] < 0.0 { d[0] = -d[0]; for j in 0..n { v[j][0] = -v[j][0]; } }
-        return Ok((d, u, v));
+fn delimit_subproblem(
+    diag: &mut Vec<f64>,
+    off: &mut Vec<f64>,
+    u: &mut Option<Vec<Vec<f64>>>,
+    vt: &mut Option<Vec<Vec<f64>>>,
+    end: usize,
+    eps: f64,
+) -> (usize, usize) {
+    let mut n = end;
+    while n > 0 {
+        let m = n - 1;
+        if fabs(off[m]) <= eps * (fabs(diag[n]) + fabs(diag[m])) {
+            off[m] = 0.0;
+        } else if fabs(diag[m]) <= eps {
+            diag[m] = 0.0;
+            cancel_horizontal(diag, off, u, vt, m, m + 1);
+            if m != 0 {
+                cancel_vertical(diag, off, u, vt, m - 1);
+            }
+        } else if fabs(diag[n]) <= eps {
+            diag[n] = 0.0;
+            cancel_vertical(diag, off, u, vt, m);
+        } else {
+            break;
+        }
+        n -= 1;
     }
 
-    // LAPACK 定数
-    const EPS: f64    = 2.22e-16;
-    const UNFL: f64   = 2.23e-308; // safe minimum
-    const TOLMUL: f64 = 100.0;
-    let tol = TOLMUL * EPS;
-    let maxitr = 6 * k;
+    if n == 0 {
+        return (0, 0);
+    }
 
-    // smax: 全要素の最大絶対値（閾値スケール用）
-    let smax = d.iter().chain(e.iter()).map(|v| v.abs()).fold(0.0_f64, f64::max);
-    let thresh = (tol * smax).max((maxitr * k * k) as f64 * UNFL);
-    dlog!("dbdsqr", "smax={smax:.4e} thresh={thresh:.4e} tol={tol:.4e}");
-
-    let mut p   = k - 1; // アクティブブロックの末尾インデックス
-    let mut idir = 0usize; // 1=上→下, 2=下→上
-    let mut oldll = usize::MAX;
-    let mut oldm  = usize::MAX;
-    let mut iterdivn = 0usize;
-    let mut iter_count = 0i64;
-
-    'outer: loop {
-        if p == 0 { break; }
-
-        // 収束チェック: p 末端から縮小
-        while e[p - 1].abs() <= thresh {
-            e[p - 1] = 0.0;
-            if p == 1 { p = 0; break 'outer; }
-            p -= 1;
-        }
-        if p == 0 { break; }
-
-        // イテレーション上限チェック
-        iter_count += (p as i64) + 1;
-        if iter_count > (maxitr * k) as i64 {
-            iter_count -= (p as i64) + 1;
-            iterdivn += 1;
-            if iterdivn >= maxitr { break; }
-        }
-
-        // アクティブブロック下端 ll を探す
-        let mut ll = p - 1;
-        loop {
-            if e[ll].abs() <= thresh {
-                e[ll] = 0.0;
-                ll += 1; // ll..=p が アクティブブロック
-                break;
+    let mut new_start = n - 1;
+    while new_start > 0 {
+        let m = new_start - 1;
+        if fabs(off[m]) <= eps * (fabs(diag[new_start]) + fabs(diag[m])) {
+            off[m] = 0.0;
+            break;
+        } else if fabs(diag[m]) <= eps {
+            diag[m] = 0.0;
+            cancel_horizontal(diag, off, u, vt, m, n);
+            if m != 0 {
+                cancel_vertical(diag, off, u, vt, m - 1);
             }
-            if ll == 0 { break; }
-            ll -= 1;
+            break;
         }
+        new_start -= 1;
+    }
 
-        // ── 末端2×2ブロック直接処理 (LAPACK ll==m-1 相当) ────────────────
-        if ll == p - 1 {
-            dlog!("dbdsqr", "  2x2 direct: ll={ll} p={p} d[p-1]={:.4e} e[p-1]={:.4e} d[p]={:.4e}",
-                d[p-1], e[p-1], d[p]);
-            let (sigmx, sigmn, cosr, sinr, cosl, sinl) =
-                dlasv2(d[p - 1], e[p - 1], d[p]);
-            d[p - 1] = sigmx;
-            e[p - 1] = 0.0;
-            d[p]     = sigmn;
-            dlog!("dbdsqr", "  2x2 result: sigmx={sigmx:.4e} sigmn={sigmn:.4e}");
-            // singular vectors 更新
-            apply_givens_v(&mut v, cosr, sinr, p - 1, p, n);
-            apply_givens_u(&mut u, cosl, sinl, p - 1, p, m);
-            if p == 1 { p = 0; break; }
-            p -= 2;
-            continue;
+    (new_start, n)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 公開 API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Thin SVD: `A = U * diag(s) * Vt`、特異値は降順。
+///
+/// - `a` : m×n 行列（行ベクトルのスライス）、m >= n / m < n どちらも受け付ける
+/// - 返り値: `(U[m×k], s[k], Vt[k×n])`、k = min(m,n)
+///
+/// `numpy.linalg.svd(a, full_matrices=False)` と等価。
+pub fn svd(a: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
+    let m = a.len();
+    let n = if m > 0 { a[0].len() } else { 0 };
+    if m >= n {
+        svd_impl(a, true, true)
+    } else {
+        // m < n: A^T (n×m) で計算し U, Vt を入れ替えて返す
+        // svd(A^T) = (U', s, Vt')  →  svd(A) = (Vt'^T, s, U'^T)
+        let at = transpose(a, m, n);
+        let (u_t, s, vt_t) = svd_impl(&at, true, true);
+        let u = transpose(&vt_t, n, m);   // Vt'^T: m×k
+        let vt = transpose(&u_t, m, n);   // U'^T:  k×n
+        (u, s, vt)
+    }
+}
+
+/// 特異値のみを返す（U, Vt は計算しない）。
+///
+/// `scipy.linalg.svdvals(a)` と等価。
+pub fn svdvals(a: &[Vec<f64>]) -> Vec<f64> {
+    let m = a.len();
+    let n = if m > 0 { a[0].len() } else { 0 };
+    if m >= n {
+        let (_, s, _) = svd_impl(a, false, false);
+        s
+    } else {
+        let at = transpose(a, m, n);
+        let (_, s, _) = svd_impl(&at, false, false);
+        s
+    }
+}
+
+fn transpose(a: &[Vec<f64>], rows: usize, cols: usize) -> Vec<Vec<f64>> {
+    let mut out = vec![vec![0.0f64; rows]; cols];
+    for i in 0..rows {
+        for j in 0..cols {
+            out[j][i] = a[i][j];
         }
+    }
+    out
+}
 
-        // ── idir: sweep 方向の決定 ──────────────────────────────────────
-        if ll != oldll || p != oldm {
-            idir = if d[ll].abs() >= d[p].abs() { 1 } else { 2 };
-        }
-        oldll = ll;
-        oldm  = p;
-        dlog!("dbdsqr", "iter={iter_count} ll={ll} p={p} idir={idir} d={:.4?} e={:.4?}",
-            &d[ll..=p], &e[ll..p]);
+// ─────────────────────────────────────────────────────────────────────────────
+// 内部実装
+//
+// 出典: nalgebra/src/linalg/svd.rs `SVD::try_new_unordered` (Apache-2.0)
+// ─────────────────────────────────────────────────────────────────────────────
 
-        // ── 収束テスト (LAPACK の前向き/後向き mu 連鎖) ─────────────────
-        let converged_early = if idir == 1 {
-            // 前向き: ll → p の方向で smin を追跡
-            let mut mu = d[ll].abs();
-            let mut smin = mu;
-            let mut hit = false;
-            for lll in ll..p {
-                if e[lll].abs() <= tol * mu {
-                    e[lll] = 0.0;
-                    hit = true;
+fn svd_impl(
+    a: &[Vec<f64>],
+    compute_u: bool,
+    compute_v: bool,
+) -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
+    let m = a.len();
+    assert!(m > 0, "空行列は SVD できない");
+    let n = a[0].len();
+    assert!(m >= n, "svd: m >= n が必要 (thin SVD)");
+    let dim = n;
+
+    // ── Step 1: camax スケーリング（nalgebra `try_new_unordered` 冒頭）────
+    let amax = a
+        .iter()
+        .flat_map(|r: &Vec<f64>| r.iter())
+        .cloned()
+        .fold(0.0_f64, |acc: f64, x: f64| if fabs(x) > acc { fabs(x) } else { acc });
+    let scale = if amax == 0.0 { 1.0 } else { amax };
+    let a_scaled: Vec<Vec<f64>> = a
+        .iter()
+        .map(|r: &Vec<f64>| r.iter().map(|x| x / scale).collect())
+        .collect();
+
+    // ── Step 2: Householder 二重対角化 ────────────────────────────────────
+    let (mut diag, mut off, u_refl, vt_refl) = bidiagonalize(&a_scaled);
+
+    // ── Step 3: U, Vt を組み立てる ────────────────────────────────────────
+    let mut u_mat: Option<Vec<Vec<f64>>> = if compute_u {
+        Some(assemble_u(m, dim, &diag, &u_refl))
+    } else {
+        None
+    };
+    let mut vt_mat: Option<Vec<Vec<f64>>> = if compute_v {
+        Some(assemble_vt(dim, &off, &vt_refl))
+    } else {
+        None
+    };
+
+    // 対角・超対角要素を絶対値化（符号は U/Vt に反映済み）
+    for d in diag.iter_mut() {
+        *d = fabs(*d);
+    }
+    for e in off.iter_mut() {
+        *e = fabs(*e);
+    }
+
+    // ── Step 4: QR イテレーション（Golub-Reinsch implicit-shift）────────
+    // 出典: nalgebra/src/linalg/svd.rs `SVD::try_new_unordered` メインループ
+    let eps = f64::EPSILON * 5.0;
+
+    let (mut start, mut end) = delimit_subproblem(
+        &mut diag, &mut off, &mut u_mat, &mut vt_mat, dim - 1, eps,
+    );
+
+    // nalgebra `SVD::new` は max_niter=0（無制限）で呼ぶが、ここでは
+    // 万一の非収束に備えた保険として十分大きな上限を設ける。
+    let max_niter = 100 * dim + 1000;
+    let mut niter = 0usize;
+
+    while end != start {
+        let subdim = end - start + 1;
+
+        if subdim > 2 {
+            // Wilkinson シフト付き implicit QR ステップ
+            let m_idx = end - 1;
+            let n_idx = end;
+
+            let dm = diag[m_idx];
+            let dn = diag[n_idx];
+            let fm = off[m_idx];
+            let tmm = dm * dm + if m_idx > 0 { off[m_idx - 1] * off[m_idx - 1] } else { 0.0 };
+            let tmn = dm * fm;
+            let tnn = dn * dn + fm * fm;
+            let shift = wilkinson_shift(tmm, tnn, tmn);
+
+            let mut vx = diag[start] * diag[start] - shift;
+            let mut vy = diag[start] * off[start];
+
+            for k in start..n_idx {
+                let m12 = if k == n_idx - 1 { 0.0 } else { off[k + 1] };
+
+                // 2×3 サブ行列 subm（nalgebra `Matrix2x3`）:
+                //   [[d[k], off[k], 0], [0, d[k+1], m12]]
+                // 原典は subm.fixed_columns_mut::<2>(j) のビューに対し
+                // rotate_rows（列ペア右作用）/ rotate（2 行左作用）を呼ぶ。
+                let mut subm: [[f64; 3]; 2] = [
+                    [diag[k], off[k], 0.0],
+                    [0.0, diag[k + 1], m12],
+                ];
+
+                if let Some((rot1, norm1)) = Givens::cancel_y(vx, vy) {
+                    // rot1.inverse().rotate_rows(subm.cols(0,1))
+                    //   列ペア (0,1) への右作用 [c,+s / -s,c]（inverse で s 反転）
+                    let inv1 = rot1.inverse();
+                    subm_rotate_rows(&mut subm, inv1, 0, 1);
+
+                    if k > start {
+                        off[k - 1] = norm1;
+                    }
+
+                    // rot2 = cancel_y(subm[0][0], subm[1][0])
+                    let (rot2, norm2) = Givens::cancel_y(subm[0][0], subm[1][0])
+                        .unwrap_or((Givens::identity(), subm[0][0]));
+
+                    // rot2.rotate(subm.cols(1,2)): 2 行 (0,1) への左作用 [c,-s / s,c]
+                    //   ただし列範囲は 1..3 に限定
+                    subm_rotate(&mut subm, rot2, 1, 3);
+                    subm[0][0] = norm2;
+
+                    // Vt 更新（upper_diagonal=true → rot1.rotate(v_t.rows(k,k+1))）
+                    if let Some(ref mut vt) = vt_mat {
+                        rot1.rotate(vt, k, k + 1);
+                    }
+                    // U 更新（upper_diagonal=true → rot2.inverse().rotate_rows(u.cols(k,k+1))）
+                    if let Some(ref mut u) = u_mat {
+                        rot2.inverse().rotate_rows(u, k, k + 1);
+                    }
+
+                    diag[k] = subm[0][0];
+                    diag[k + 1] = subm[1][1];
+                    off[k] = subm[0][1];
+                    if k != n_idx - 1 {
+                        off[k + 1] = subm[1][2];
+                    }
+                    vx = subm[0][1];
+                    vy = subm[0][2];
+                } else {
                     break;
                 }
-                mu = d[lll + 1].abs() * mu / (mu + e[lll].abs());
-                smin = smin.min(mu);
             }
-            hit
-        } else {
-            // 後向き: p → ll の方向
-            let mut mu = d[p].abs();
-            let mut smin = mu;
-            let mut hit = false;
-            for lll in (ll..p).rev() {
-                if e[lll].abs() <= tol * mu {
-                    e[lll] = 0.0;
-                    hit = true;
-                    break;
+        } else if subdim == 2 {
+            // 残り 2×2 の closed-form SVD
+            let (u2, s2, v2) = svd_2x2_uptrig(
+                diag[start],
+                off[start],
+                diag[start + 1],
+                compute_u,
+                compute_v,
+            );
+            diag[start] = s2[0];
+            diag[start + 1] = s2[1];
+            off[start] = 0.0;
+
+            if let (Some(u), Some(rot)) = (&mut u_mat, u2) {
+                rot.rotate_rows(u as &mut Vec<Vec<f64>>, start, start + 1);
+            }
+            if let (Some(vt), Some(rot)) = (&mut vt_mat, v2) {
+                rot.inverse().rotate(vt as &mut Vec<Vec<f64>>, start, start + 1);
+            }
+            end -= 1;
+        }
+
+        let sub = delimit_subproblem(
+            &mut diag, &mut off, &mut u_mat, &mut vt_mat, end, eps,
+        );
+        start = sub.0;
+        end = sub.1;
+
+        niter += 1;
+        assert!(niter < max_niter, "svd: QR イテレーションが収束しませんでした");
+    }
+
+    // ── Step 5: スケールを戻す ────────────────────────────────────────────
+    for d in diag.iter_mut() {
+        *d *= scale;
+    }
+
+    // 負の特異値を正にして U の対応列の符号を反転
+    for i in 0..dim {
+        if diag[i] < 0.0 {
+            diag[i] = -diag[i];
+            if let Some(ref mut u) = u_mat {
+                for row in (u as &mut Vec<Vec<f64>>).iter_mut() {
+                    row[i] = -row[i];
                 }
-                mu = d[lll].abs() * mu / (mu + e[lll].abs());
-                smin = smin.min(mu);
             }
-            hit
-        };
-        if converged_early {
-            dlog!("dbdsqr", "  early converge via mu-chain");
-            continue;
         }
+    }
 
-        // ── シフト: ゼロシフト判定 (LAPACK: n*tol*(smin/smax) <= max(eps, hndrth*tol)) ─
-        let smin_est = {
-            let mut mu = d[ll].abs();
-            for lll in ll..p { mu = d[lll+1].abs() * mu / (mu + e[lll].abs()); }
-            mu
-        };
-        let use_zero_shift = (k as f64) * tol * (smin_est / smax)
-            <= EPS.max(0.01 * tol);
+    // ── Step 6: 降順ソート（nalgebra `sort_by_singular_values`）─────────
+    let mut idx: Vec<usize> = (0..dim).collect();
+    idx.sort_unstable_by(|&a, &b| {
+        diag[b].partial_cmp(&diag[a]).unwrap()
+    });
 
-        // ── QR イテレーション (LAPACK DBDSQR DO 120/DO 130/DO 140/DO 150) ──
-        if idir == 1 {
-            // 上→下 sweep (LAPACK DO 140: idir==1, shift!=0)
-            let shift = if use_zero_shift { 0.0 } else { compute_qr_shift(&d, &e, p) };
-            dlog!("dbdsqr", "  sweep↓ shift={shift:.4e} zero={use_zero_shift}");
-            // f = (|d[ll]| - shift) * (sign(d[ll]) + shift/d[ll])  (LAPACK l.476-477)
-            let mut f = (d[ll].abs() - shift)
-                * (if d[ll] >= 0.0 { 1.0 } else { -1.0 } + shift / d[ll]);
-            let mut g = e[ll];
+    let sorted_s: Vec<f64> = idx.iter().map(|&i| diag[i]).collect();
 
-            for i in ll..p {
-                // 右回転: (f, g) → r, V に累積
-                let (cosr, sinr, r) = givens_params(f, g);
-                if i > ll { e[i - 1] = r; }
-                // bidiagonal 更新 (LAPACK l.483-486)
-                f  =  cosr * d[i] + sinr * e[i];
-                e[i] = cosr * e[i] - sinr * d[i];
-                g  =  sinr * d[i + 1];
-                d[i + 1] = cosr * d[i + 1];
-                apply_givens_v(&mut v, cosr, sinr, i, i + 1, n);
-
-                // 左回転: (f, g) → r, U に累積
-                let (cosl, sinl, r) = givens_params(f, g);
-                d[i] = r;
-                // bidiagonal 更新 (LAPACK l.489-492)
-                f      =  cosl * e[i] + sinl * d[i + 1];
-                d[i + 1] = cosl * d[i + 1] - sinl * e[i];
-                if i + 1 < p {
-                    g = sinl * e[i + 1];
-                    e[i + 1] = cosl * e[i + 1];
-                }
-                apply_givens_u(&mut u, cosl, sinl, i, i + 1, m);
+    let sorted_u = u_mat.map(|u| {
+        let mut su = vec![vec![0.0f64; dim]; m];
+        for (new_j, &old_j) in idx.iter().enumerate() {
+            for i in 0..m {
+                su[i][new_j] = u[i][old_j];
             }
-            e[p - 1] = f;
-            dlog!("dbdsqr", "  after↓ d={:.4?} e={:.4?}", &d[ll..=p], &e[ll..p]);
-
-        } else {
-            // 下→上 sweep (LAPACK DO 150: idir==2, shift!=0)
-            let shift = if use_zero_shift { 0.0 } else { compute_qr_shift_bottom(&d, &e, ll, p) };
-            dlog!("dbdsqr", "  sweep↑ shift={shift:.4e} zero={use_zero_shift}");
-            // f = (|d[p]| - shift) * (sign(d[p]) + shift/d[p])  (LAPACK l.526-527)
-            let mut f = (d[p].abs() - shift)
-                * (if d[p] >= 0.0 { 1.0 } else { -1.0 } + shift / d[p]);
-            let mut g = e[p - 1];
-
-            for i in (ll..p).rev() {
-                // 右回転
-                let (cosr, sinr, r) = givens_params(f, g);
-                if i < p - 1 { e[i + 1] = r; }
-                // bidiagonal 更新 (LAPACK l.533-536)
-                f    =  cosr * d[i + 1] + sinr * e[i];
-                e[i] =  cosr * e[i] - sinr * d[i + 1];
-                g    =  sinr * d[i];
-                d[i] =  cosr * d[i];
-                // LAPACK DO 150: work(nm1) = -sinr → V に渡すとき符号反転
-                apply_givens_v(&mut v, cosr, -sinr, i, i + 1, n);
-
-                // 左回転
-                let (cosl, sinl, r) = givens_params(f, g);
-                d[i + 1] = r;
-                // bidiagonal 更新 (LAPACK l.539-542)
-                f    =  cosl * e[i] + sinl * d[i];
-                d[i] =  cosl * d[i] - sinl * e[i];
-                if i > ll {
-                    g = sinl * e[i - 1];
-                    e[i - 1] = cosl * e[i - 1];
-                }
-                // LAPACK DO 150: work(nm13) = -sinl → U に渡すとき符号反転
-                apply_givens_u(&mut u, cosl, -sinl, i, i + 1, m);
-            }
-            e[ll] = f;
-            dlog!("dbdsqr", "  after↑ d={:.4?} e={:.4?}", &d[ll..=p], &e[ll..p]);
         }
-    }
+        su
+    });
 
-    dlog!("dbdsqr", "done d={d:.4?}", d = &d);
-    // 負の特異値を正に
-    for i in 0..k {
-        if d[i] < 0.0 {
-            d[i] = -d[i];
-            for j in 0..n { v[j][i] = -v[j][i]; }
+    let sorted_vt = vt_mat.map(|vt| {
+        let mut svt = vec![vec![0.0f64; n]; dim];
+        for (new_i, &old_i) in idx.iter().enumerate() {
+            svt[new_i] = vt[old_i].clone();
         }
-    }
+        svt
+    });
 
-    // Sort singular values in descending order
-    let mut indices: Vec<usize> = (0..k).collect();
-    indices.sort_by(|&i, &j| d[j].partial_cmp(&d[i]).unwrap_or(Ordering::Equal));
-
-    let mut sorted_d = vec![0.0; k];
-    let mut sorted_u = u.clone();
-    let mut sorted_v = v.clone();
-
-    for (i, &idx) in indices.iter().enumerate() {
-        sorted_d[i] = d[idx];
-        for j in 0..m {
-            sorted_u[j][i] = u[j][idx];
-        }
-        for j in 0..n {
-            sorted_v[j][i] = v[j][idx];
-        }
-    }
-
-    Ok((sorted_d, sorted_u, sorted_v))
+    (
+        sorted_u.unwrap_or_default(),
+        sorted_s,
+        sorted_vt.unwrap_or_default(),
+    )
 }
 
-/// Wilkinson shift: 対称 2×2 行列 [[a,c],[c,b]] の固有値のうち b に近い方
-/// nalgebra symmetric_eigen::wilkinson_shift と同じ公式
-fn wilkinson_shift(a: f64, b: f64, c: f64) -> f64 {
-    let d = (a - b) * 0.5;
-    let denom = if d == 0.0 {
-        c.abs()
-    } else {
-        d.abs() + sqrt(d * d + c * c)
-    };
-    if denom == 0.0 { return b; }
-    b - c * c / denom.copysign(d)
-}
-
-/// 上→下 sweep 用シフト (LAPACK DO 140 直前の shift 計算)
-/// B^T B 末端 2×2 = [[tmm, tmn],[tmn, tnn]] から Wilkinson shift
-///   tmm = d[p-1]^2 + e[p-2]^2 (または d[p-1]^2 のみ)
-///   tmn = d[p-1] * e[p-1]
-///   tnn = d[p]^2 + e[p-1]^2
-fn compute_qr_shift(d: &[f64], e: &[f64], p: usize) -> f64 {
-    let dm  = d[p - 1];
-    let dn  = d[p];
-    let em  = e[p - 1];
-    let em1 = if p >= 2 { e[p - 2] } else { 0.0 };
-    let tmm = dm * dm + em1 * em1;
-    let tmn = dm * em;
-    let tnn = dn * dn + em  * em;
-    wilkinson_shift(tmm, tnn, tmn).max(0.0)
-}
-
-/// 下→上 sweep 用シフト (LAPACK DO 150 直前の shift 計算)
-/// B^T B 先頭 2×2 = [[tll, tln],[tln, tl1l1]] から Wilkinson shift
-fn compute_qr_shift_bottom(d: &[f64], e: &[f64], ll: usize, _p: usize) -> f64 {
-    let dll  = d[ll];
-    let dl1  = d[ll + 1];
-    let ell  = e[ll];
-    let ell1 = if ll + 2 < e.len() { e[ll + 1] } else { 0.0 };
-    let tll   = dll  * dll  + ell  * ell;   // (ll,ll) 要素
-    let tln   = dll  * ell;                 // (ll,ll+1) 要素
-    let tl1l1 = dl1  * dl1  + ell1 * ell1; // (ll+1,ll+1) 要素
-    wilkinson_shift(tl1l1, tll, tln).max(0.0)
-}
-
-/// Apply Givens rotation to U matrix (left multiplication)
-///
-/// Updates columns i and j of U matrix:
-/// U[:, [i, j]] := U[:, [i, j]] * [[c, s], [-s, c]]
-fn apply_givens_u(u: &mut Vec<Vec<f64>>, c: f64, s: f64, i: usize, j: usize, m: usize) {
-    for row in 0..m {
-        let u_i = u[row][i];
-        let u_j = u[row][j];
-        u[row][i] = c * u_i + s * u_j;
-        u[row][j] = -s * u_i + c * u_j;
-    }
-}
-
-/// Apply Givens rotation to V matrix (right multiplication)
-///
-/// Updates columns i and j of V matrix:
-/// V[:, [i, j]] := V[:, [i, j]] * [[c, s], [-s, c]]
-fn apply_givens_v(v: &mut Vec<Vec<f64>>, c: f64, s: f64, i: usize, j: usize, n: usize) {
-    for row in 0..n {
-        let v_i = v[row][i];
-        let v_j = v[row][j];
-        v[row][i] = c * v_i + s * v_j;
-        v[row][j] = -s * v_i + c * v_j;
-    }
-}
-
-/// Compute Givens rotation parameters (c, s) for vector [a, b]
-///
-/// Returns (c, s) such that [[c, s], [-s, c]]^T * [a; b] = [r; 0]
-/// where r = sqrt(a^2 + b^2)
-///
-/// This is the standard Givens rotation for zeroing the second element.
-/// LAPACK dlartg: numerically safe Givens rotation.
-/// Returns (c, s, r) such that [c s; -s c] * [f; g] = [r; 0].
-/// c >= 0, r = sign(hypot(f,g), f).
-fn givens_params(f: f64, g: f64) -> (f64, f64, f64) {
-    const SAFMIN: f64 = 2.2250738585072014e-308_f64;
-    const SAFMAX: f64 = 4.4942328371557897e+307_f64; // safmax / 2
-    let rtmin = sqrt(SAFMIN);
-    let rtmax = sqrt(SAFMAX);
-
-    let f1 = f.abs();
-    let g1 = g.abs();
-
-    if g == 0.0 {
-        return (1.0, 0.0, f);
-    }
-    if f == 0.0 {
-        let s = if g >= 0.0 { 1.0 } else { -1.0 };
-        return (0.0, s, g1);
-    }
-
-    let (c, s, r);
-    if f1 > rtmin && f1 < rtmax && g1 > rtmin && g1 < rtmax {
-        let d = sqrt(f * f + g * g);
-        c = f1 / d;
-        r = if f >= 0.0 { d } else { -d };
-        s = g / r;
-    } else {
-        let u = f1.max(g1).min(SAFMAX * 2.0).max(SAFMIN);
-        let fs = f / u;
-        let gs = g / u;
-        let d = sqrt(fs * fs + gs * gs);
-        c = fs.abs() / d;
-        r = if f >= 0.0 { d * u } else { -d * u };
-        s = gs / (r / u);
-    }
-
-    (c, s, r)
-}
-
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests — nalgebra 比較（svd.rs から移植）
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -792,190 +833,124 @@ mod tests {
     extern crate std;
     use std::println;
 
-    fn init_log() { let _ = crate::debug_log::init_test_logger(); }
+    // ── ヘルパー ──────────────────────────────────────────────────────────────
 
-    #[test]
-    fn test_gebrd_simple_matrix() {
-        // Test GEBRD on a simple 3x3 matrix
-        let mut a = vec![
-            vec![1.0, 2.0, 3.0],
-            vec![4.0, 5.0, 6.0],
-            vec![7.0, 8.0, 9.0],
-        ];
-
-        match gebrd(&mut a) {
-            Ok(state) => {
-                // Basic structural checks
-                assert_eq!(state.d.len(), 3, "diagonal vector length");
-                assert_eq!(state.e.len(), 2, "superdiagonal vector length");
-                assert_eq!(state.u.len(), 3, "U matrix rows");
-                assert_eq!(state.v.len(), 3, "V matrix rows");
-
-                // Check diagonal is non-zero (unless matrix is singular)
-                let max_diag = state.d.iter().map(|x| x.abs()).fold(0.0, f64::max);
-                assert!(max_diag > 1e-10, "diagonal should have non-zero entries");
-
-                println!(
-                    "GEBRD test passed. Diagonal: {:?}, Superdiagonal: {:?}",
-                    state.d, state.e
-                );
-            }
-            Err(e) => panic!("GEBRD failed: {}", e),
-        }
-    }
-
-    #[test]
-    fn test_gebrd_tall_matrix() {
-        // Test GEBRD on a tall m > n matrix
-        let mut a = vec![
-            vec![1.0, 2.0],
-            vec![3.0, 4.0],
-            vec![5.0, 6.0],
-            vec![7.0, 8.0],
-        ];
-
-        match gebrd(&mut a) {
-            Ok(state) => {
-                assert_eq!(state.d.len(), 2);
-                assert_eq!(state.e.len(), 1);
-                assert_eq!(state.u.len(), 4);
-                assert_eq!(state.u[0].len(), 4);
-                assert_eq!(state.v.len(), 2);
-                assert_eq!(state.v[0].len(), 2);
-            }
-            Err(e) => panic!("GEBRD failed: {}", e),
-        }
-    }
-
-    #[test]
-    fn test_gebrd_wide_matrix() {
-        // Test GEBRD on a wide m < n matrix
-        let mut a = vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]];
-
-        match gebrd(&mut a) {
-            Ok(state) => {
-                assert_eq!(state.d.len(), 2);
-                assert_eq!(state.e.len(), 1);
-                assert_eq!(state.u.len(), 2);
-                assert_eq!(state.v.len(), 4);
-            }
-            Err(e) => panic!("GEBRD failed: {}", e),
-        }
-    }
-
-    #[test]
-    fn test_householder_vector() {
-        // Test Householder vector computation
-        let x = vec![1.0, 2.0, 3.0];
-        let (_v, tau, beta) = householder_vector(&x);
-
-        // tau should be positive and reasonable
-        assert!(tau >= 0.0 && tau <= 2.0);
-
-        // beta should be the norm of x with appropriate sign
-        let norm_x = sqrt(x.iter().map(|v| v * v).sum::<f64>());
-        assert!((beta.abs() - norm_x).abs() < 1e-10);
-    }
-
-    fn transpose(a: &Vec<Vec<f64>>) -> Vec<Vec<f64>> {
-        if a.is_empty() {
-            return vec![];
-        }
+    fn nalgebra_singvals(a: &[Vec<f64>]) -> Vec<f64> {
+        use nalgebra::DMatrix;
         let m = a.len();
         let n = a[0].len();
-        let mut result = vec![vec![0.0; m]; n];
-        for i in 0..m {
-            for j in 0..n {
-                result[j][i] = a[i][j];
-            }
-        }
-        result
+        let dm = DMatrix::from_fn(m, n, |r, c| a[r][c]);
+        let sv = dm.svd(false, false);
+        sv.singular_values.iter().copied().collect()
     }
 
-    fn matrix_mult(a: &Vec<Vec<f64>>, b: &Vec<Vec<f64>>) -> Vec<Vec<f64>> {
+    fn nalgebra_full(a: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
+        use nalgebra::DMatrix;
         let m = a.len();
-        let n = b[0].len();
-        let k = a[0].len();
-        let mut result = vec![vec![0.0; n]; m];
+        let n = a[0].len();
+        let dm = DMatrix::from_fn(m, n, |r, c| a[r][c]);
+        let sv = dm.svd(true, true);
+        let u_na = sv.u.unwrap();
+        let vt_na = sv.v_t.unwrap();
+        let s: Vec<f64> = sv.singular_values.iter().copied().collect();
+        let k = s.len();
+        let u: Vec<Vec<f64>> = (0..m).map(|i| (0..k).map(|j| u_na[(i, j)]).collect()).collect();
+        let vt: Vec<Vec<f64>> = (0..k).map(|i| (0..n).map(|j| vt_na[(i, j)]).collect()).collect();
+        (u, s, vt)
+    }
+
+    fn reconstruction_error(a: &[Vec<f64>], u: &[Vec<f64>], s: &[f64], vt: &[Vec<f64>]) -> f64 {
+        let m = a.len();
+        let n = a[0].len();
+        let k = s.len();
+        let mut err = 0.0f64;
         for i in 0..m {
             for j in 0..n {
-                for p in 0..k {
-                    result[i][j] += a[i][p] * b[p][j];
-                }
+                let rec: f64 = (0..k).map(|r| u[i][r] * s[r] * vt[r][j]).sum();
+                err += (a[i][j] - rec).powi(2);
             }
         }
-        result
+        err.sqrt()
     }
 
-    fn assert_identity_like(a: &Vec<Vec<f64>>, tol: f64) {
-        let n = a.len();
-        for i in 0..n {
-            for j in 0..n {
+    fn orthogonality_error_u(u: &[Vec<f64>]) -> f64 {
+        let m = u.len();
+        let k = u[0].len();
+        let mut err = 0.0f64;
+        for i in 0..k {
+            for j in 0..k {
+                let dot: f64 = (0..m).map(|r| u[r][i] * u[r][j]).sum();
                 let expected = if i == j { 1.0 } else { 0.0 };
-                assert!(
-                    (a[i][j] - expected).abs() < tol,
-                    "Matrix not identity-like at [{}, {}]: {} vs {}",
-                    i,
-                    j,
-                    a[i][j],
-                    expected
-                );
+                err += (dot - expected).powi(2);
             }
         }
+        err.sqrt()
+    }
+
+    fn orthogonality_error_vt(vt: &[Vec<f64>]) -> f64 {
+        let k = vt.len();
+        let n = vt[0].len();
+        let mut err = 0.0f64;
+        for i in 0..k {
+            for j in 0..k {
+                let dot: f64 = (0..n).map(|c| vt[i][c] * vt[j][c]).sum();
+                let expected = if i == j { 1.0 } else { 0.0 };
+                err += (dot - expected).powi(2);
+            }
+        }
+        err.sqrt()
+    }
+
+    fn assert_svd_quality(label: &str, a: &[Vec<f64>], tol_recon: f64, tol_orth: f64) {
+        let (u, s, vt) = svd(a);
+        let recon   = reconstruction_error(a, &u, &s, &vt);
+        let orth_u  = orthogonality_error_u(&u);
+        let orth_vt = orthogonality_error_vt(&vt);
+        assert!(recon   < tol_recon, "{label}: reconstruction error {recon:.2e} >= {tol_recon:.2e}");
+        assert!(orth_u  < tol_orth,  "{label}: U orthogonality {orth_u:.2e} >= {tol_orth:.2e}");
+        assert!(orth_vt < tol_orth,  "{label}: Vt orthogonality {orth_vt:.2e} >= {tol_orth:.2e}");
+    }
+
+    // ── 基本 ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_svd_basic() {
+        let a = vec![vec![1.0_f64, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
+        let (u, s, vt) = svd(&a);
+        assert_eq!(u.len(), 3);
+        assert_eq!(u[0].len(), 2);
+        assert_eq!(s.len(), 2);
+        assert_eq!(vt.len(), 2);
+        assert_eq!(vt[0].len(), 2);
+        assert!(s[0] >= s[1], "特異値が降順でない");
+        assert!(s[0] > 0.0);
+        println!("test_svd_basic: s = {:?}", s);
     }
 
     #[test]
-    fn test_full_basic() {
-        // Test full SVD on a simple matrix
-        let a = vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
-
-        match full(&a) {
-            Ok((u, s, vt)) => {
-                // Check dimensions
-                assert_eq!(u.len(), 3, "U rows");
-                assert_eq!(u[0].len(), 2, "U cols");
-                assert_eq!(s.len(), 2, "singular values");
-                assert_eq!(vt.len(), 2, "V^T rows");
-                assert_eq!(vt[0].len(), 2, "V^T cols");
-
-                // Check singular values are non-negative and descending
-                assert!(s[0] >= s[1], "singular values should be descending");
-                assert!(s[0] > 0.0, "singular values should be positive");
-
-                println!("SVD test passed. Singular values: {:?}", s);
-            }
-            Err(e) => panic!("SVD failed: {}", e),
-        }
+    fn test_svdvals_basic() {
+        let a = vec![vec![1.0_f64, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
+        let s = svdvals(&a);
+        assert_eq!(s.len(), 2);
+        assert!(s[0] >= s[1]);
+        assert!(s[0] > 0.0);
+        println!("test_svdvals_basic: s = {:?}", s);
     }
 
-    #[test]
-    fn test_singvals_basic() {
-        // Test singvals on a simple matrix
-        let a = vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
-
-        let s = singvals(&a);
-        assert_eq!(s.len(), 2, "number of singular values");
-        assert!(s[0] >= s[1], "singular values should be descending");
-        assert!(s[0] > 0.0, "singular values should be positive");
-        println!("Singvals test passed: {:?}", s);
-    }
+    // ── nalgebra 比較 ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_against_nalgebra() {
-        init_log();
-        // Singular values for [[1,2],[3,4],[5,6]].
         // nalgebra reference: [9.52551809, 0.51430058]
-        let a = vec![vec![1.0f64, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
-        let s = singvals(&a);
+        let a = vec![vec![1.0_f64, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
+        let s = svdvals(&a);
         assert!((s[0] - 9.5255).abs() < 1e-4, "s[0] expected ~9.5255, got {}", s[0]);
         assert!((s[1] - 0.5143).abs() < 1e-4, "s[1] expected ~0.5143, got {}", s[1]);
 
-        // full() must produce correct U and Vt:
-        // for y = 2 + 3*x on a 30x2 design matrix, beta = Vt^T * diag(1/s) * U^T * y
-        // should recover [2.0, 3.0] exactly.
+        // beta = Vt^T * diag(1/s) * U^T * y を OLS として検証
         let x_rows: Vec<Vec<f64>> = (0..30).map(|i| vec![1.0, i as f64 / 30.0]).collect();
         let y_lin: Vec<f64> = x_rows.iter().map(|r| 2.0 + 3.0 * r[1]).collect();
-        let (u, s2, vt) = full(&x_rows).unwrap();
+        let (u, s2, vt) = svd(&x_rows);
         let m = x_rows.len();
         let k = s2.len();
         let nf = vt[0].len();
@@ -988,100 +963,18 @@ mod tests {
         assert!((beta[1] - 3.0).abs() < 1e-10, "slope expected 3.0, got {}", beta[1]);
     }
 
-    #[test]
-    fn test_golden_simple() {
-        // Placeholder for Python golden file tests
-        // Golden files will be loaded and tested separately
-    }
-
-    // ── nalgebra比較テストのヘルパー ──────────────────────────────────────
-
-    fn nalgebra_singvals(a: &Vec<Vec<f64>>) -> Vec<f64> {
-        use nalgebra::DMatrix;
-        let m = a.len();
-        let n = a[0].len();
-        let dm = DMatrix::from_fn(m, n, |r, c| a[r][c]);
-        let svd = dm.svd(false, false);
-        svd.singular_values.iter().copied().collect()
-    }
-
-    fn reconstruction_error(a: &Vec<Vec<f64>>, u: &Vec<Vec<f64>>, s: &[f64], vt: &Vec<Vec<f64>>) -> f64 {
-        let m = a.len();
-        let n = a[0].len();
-        let k = s.len();
-        let mut err = 0.0f64;
-        for i in 0..m {
-            for j in 0..n {
-                let rec: f64 = (0..k).map(|r| u[i][r] * s[r] * vt[r][j]).sum();
-                err += (a[i][j] - rec).powi(2);
-            }
-        }
-        sqrt(err)
-    }
-
-    fn orthogonality_error_u(u: &Vec<Vec<f64>>) -> f64 {
-        let m = u.len();
-        let k = u[0].len();
-        let mut err = 0.0f64;
-        for i in 0..k {
-            for j in 0..k {
-                let dot: f64 = (0..m).map(|r| u[r][i] * u[r][j]).sum();
-                let expected = if i == j { 1.0 } else { 0.0 };
-                err += (dot - expected).powi(2);
-            }
-        }
-        sqrt(err)
-    }
-
-    fn orthogonality_error_vt(vt: &Vec<Vec<f64>>) -> f64 {
-        let k = vt.len();
-        let n = vt[0].len();
-        let mut err = 0.0f64;
-        for i in 0..k {
-            for j in 0..k {
-                let dot: f64 = (0..n).map(|c| vt[i][c] * vt[j][c]).sum();
-                let expected = if i == j { 1.0 } else { 0.0 };
-                err += (dot - expected).powi(2);
-            }
-        }
-        sqrt(err)
-    }
-
-    fn assert_svd_quality(label: &str, a: &Vec<Vec<f64>>, tol_recon: f64, tol_orth: f64) {
-        let (u, s, vt) = full(a).unwrap_or_else(|e| panic!("{label}: full() failed: {e}"));
-        let recon   = reconstruction_error(a, &u, &s, &vt);
-        let orth_u  = orthogonality_error_u(&u);
-        let orth_vt = orthogonality_error_vt(&vt);
-        assert!(recon   < tol_recon, "{label}: reconstruction error {recon:.2e} >= {tol_recon:.2e}");
-        assert!(orth_u  < tol_orth,  "{label}: U orthogonality {orth_u:.2e} >= {tol_orth:.2e}");
-        assert!(orth_vt < tol_orth,  "{label}: Vt orthogonality {orth_vt:.2e} >= {tol_orth:.2e}");
-    }
-
-    // ── 精度検証テスト ────────────────────────────────────────────────────
-
-    /// 末端2×2ブロック処理の精度検証
-    ///
-    /// k=2 の純粋2×2行列は 1 回の Givens で偶然収束するため末端処理の欠如を
-    /// 検出できない。問題が顕在化するのは k≥3 の行列がイテレーション中に
-    /// 末端2×2ブロック (ll==m-1) に縮んだ瞬間。
-    /// そのシナリオを意図的に作るため、s[0]>>s[1]≈s[2] な 3×3 行列を使う:
-    /// 上位特異値が先に収束して p が減り、残った2×2ブロックで dlasv2 相当が
-    /// 必要になる。
+    /// 末端 2×2 ブロック処理の精度検証（svd.rs から移植）
     #[test]
     fn svd_2x2_trailing_block() {
-        init_log();
         let cases: &[(&str, Vec<Vec<f64>>)] = &[
-            // s ≈ [1000, ~0.7, ~0.3]: 大きい s[0] が先に収束し 2×2 末端が残る
             ("3x3-trailing-2x2",
              vec![vec![1.0f64, 0.0, 0.0],
                   vec![0.0,    1.0, 1.0],
                   vec![0.0,    1.0, -1.0]]),
-            // 高条件数 3×3: s[0]/s[2] ≈ 1e6
             ("3x3-high-cond",
              vec![vec![1e3f64, 1.0,  0.0],
                   vec![0.0,    1.0,  1.0],
                   vec![0.0,    1e-3, 1.0]]),
-            // 一般密 3×3: 全要素非ゼロ、末端2×2が最も収束しにくい
             ("3x3-dense",
              vec![vec![4.0f64, 3.0, 2.0],
                   vec![3.0,    2.0, 1.0],
@@ -1089,7 +982,7 @@ mod tests {
         ];
         for (label, a) in cases {
             let s_ref = nalgebra_singvals(a);
-            let s = singvals(a);
+            let s = svdvals(a);
             for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
                 let err = if sr > 1e-8 { (sr - sf).abs() / sr } else { (sr - sf).abs() };
                 assert!(err < 1e-6,
@@ -1099,7 +992,7 @@ mod tests {
         }
     }
 
-    /// 高条件数対角行列: 特異値 [1e6, 1e3, 1.0, 1e-3] — 小特異値の相対精度
+    /// 高条件数対角行列
     #[test]
     fn svd_high_condition_number() {
         let scales = [1e6f64, 1e3, 1.0, 1e-3];
@@ -1107,15 +1000,16 @@ mod tests {
             (0..4).map(|j| if i == j { scales[i] } else { 0.0 }).collect()
         ).collect();
         let s_ref = nalgebra_singvals(&a);
-        let s = singvals(&a);
+        let s = svdvals(&a);
         for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
             let rel = (sr - sf).abs() / sr.max(1e-15);
             assert!(rel < 1e-6,
                 "high-cond s[{i}]: nalgebra={sr:.6e} flair={sf:.6e} rel={rel:.2e}");
         }
+        assert_svd_quality("high-cond", &a, 1e-11, 1e-11);
     }
 
-    /// rank-1 行列: 非ゼロ特異値が1個のみ, s[1..] ≈ 0
+    /// rank-1 行列
     #[test]
     fn svd_rank1_matrix() {
         let u_vec = [1.0f64, 2.0, 3.0];
@@ -1123,9 +1017,9 @@ mod tests {
         let a: Vec<Vec<f64>> = (0..3).map(|i|
             (0..3).map(|j| u_vec[i] * v_vec[j]).collect()
         ).collect();
-        let s = singvals(&a);
-        let expected_s0 = sqrt(u_vec.iter().map(|&v| v*v).sum::<f64>())
-                        * sqrt(v_vec.iter().map(|&v| v*v).sum::<f64>());
+        let s = svdvals(&a);
+        let expected_s0 = (u_vec.iter().map(|&v| v * v).sum::<f64>()).sqrt()
+                        * (v_vec.iter().map(|&v| v * v).sum::<f64>()).sqrt();
         assert!((s[0] - expected_s0).abs() / expected_s0 < 1e-8,
             "rank-1 s[0]: expected {expected_s0:.6} got {:.6}", s[0]);
         assert!(s[1] < 1e-8, "rank-1 s[1] should be ~0, got {}", s[1]);
@@ -1133,13 +1027,13 @@ mod tests {
         assert_svd_quality("rank-1", &a, 1e-10, 1e-10);
     }
 
-    /// near-singular: 最小特異値 ≈ 1e-10 — 絶対誤差で評価
+    /// near-singular
     #[test]
     fn svd_near_singular() {
         let eps = 1e-10f64;
         let a = vec![vec![1.0f64, 1.0], vec![1.0, 1.0 + eps]];
         let s_ref = nalgebra_singvals(&a);
-        let s = singvals(&a);
+        let s = svdvals(&a);
         let rel0 = (s_ref[0] - s[0]).abs() / s_ref[0];
         assert!(rel0 < 1e-8, "near-singular s[0] rel={rel0:.2e}");
         let abs1 = (s_ref[1] - s[1]).abs();
@@ -1147,11 +1041,9 @@ mod tests {
             "near-singular s[1] abs={abs1:.2e} (ref={:.4e} got={:.4e})", s_ref[1], s[1]);
     }
 
-    /// rank-1 dominant 行列 (12×10): optshrink が使うシナリオ, 条件数≈230
-    /// これが現状 s[1] で 4.97% ずれているケース — dbdsqr 修正後に閾値を締める
+    /// rank-1 dominant 行列 (12×10): optshrink シナリオ
     #[test]
     fn svd_rank1_dominant_period_matrix() {
-        init_log();
         let p = 12usize;
         let nc = 10usize;
         let mut a: Vec<Vec<f64>> = vec![vec![0.0; nc]; p];
@@ -1163,33 +1055,26 @@ mod tests {
             }
         }
         let s_ref = nalgebra_singvals(&a);
-        let s = singvals(&a);
-
-        // s[0]（信号強度）は高精度
+        let s = svdvals(&a);
         let rel0 = (s_ref[0] - s[0]).abs() / s_ref[0];
         assert!(rel0 < 1e-4, "period-matrix s[0] rel={rel0:.2e}");
-
-        // s[1..]: 現状の限界（10%）を記録。dbdsqr 修正後にここを 1e-3 に締める
         for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
             let rel = (sr - sf).abs() / sr.max(1e-6);
             assert!(rel < 0.10,
                 "period-matrix s[{i}]: nalgebra={sr:.4} flair={sf:.4} rel={rel:.4}");
         }
-
-        // 再構成・直交性は常に成立
         assert_svd_quality("period-matrix", &a, 1e-8, 1e-8);
     }
 
-    /// 背の高い行列 (50×3): ridge_sa の典型的な設計行列
+    /// 背の高い行列 (50×3): ridge_sa シナリオ
     #[test]
     fn svd_tall_ridge_design() {
-        init_log();
         let a: Vec<Vec<f64>> = (0..50).map(|i| {
             let t = i as f64 / 50.0;
             vec![1.0, t, (t * 6.28318).sin()]
         }).collect();
         let s_ref = nalgebra_singvals(&a);
-        let s = singvals(&a);
+        let s = svdvals(&a);
         for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
             let rel = (sr - sf).abs() / sr.max(1e-10);
             assert!(rel < 1e-6,
@@ -1197,137 +1082,29 @@ mod tests {
         }
         assert_svd_quality("tall-ridge", &a, 1e-10, 1e-10);
     }
-}
 
-// ============================================================
-// nalgebra-0.33.3 src/linalg/svd.rs より転記（比較用コメント）
-// Apache-2.0 / MIT ライセンス
-// ============================================================
-//
-// nalgebra の SVD メインループ（try_new_unordered の核心部分）
-// 現在の dbdsqr 実装と何が違うか:
-//
-// 【違い1】 idir（sweep方向切替）なし
-//   nalgebra は常に start→end（上→下）方向のみ。
-//   LAPACK / 現実装は |d[ll]| vs |d[p]| で方向を切り替える。
-//
-// 【違い2】 subdim > 2 のメインループ: Matrix2x3 局所更新
-//   nalgebra は各ステップで 2×3 の局所行列を使い、
-//   rot1（右回転）→ rot2（左回転）を local に計算してから
-//   U/V に適用する。
-//   現実装はインプレースで bidiagonal を直接更新。
-//
-// 【違い3】 subdim == 2 の2×2処理: compute_2x2_uptrig_svd
-//   nalgebra は hypot ベースの公式を使う（下記参照）。
-//   現実装は dlasv2（atan2 ベース）。
-//
-// 【違い4】 shift の計算: wilkinson_shift（symmetric_eigen から）
-//   nalgebra は T_{mm}, T_{nn}, T_{mn} から Wilkinson shift。
-//   現実装は compute_qr_shift で末端2×2固有値を直接計算。
-//
-// 【違い5】 delimit_subproblem での d[m]==0 / d[n]==0 の特殊処理
-//   nalgebra は diagonal がゼロのとき Givens でキャンセルする。
-//   現実装は thresh のみでの収束判定（この処理がない）。
-//
-// ─────────────────────────────────────────────────────────────
-// subdim > 2 のメインループ（svd.rs l.177-265）
-// ─────────────────────────────────────────────────────────────
-//
-//   let m = end - 1;
-//   let n = end;
-//
-//   // Wilkinson shift: B^T B の末端 2×2 から固有値を求める
-//   let tmm = d[m]^2 + off[m-1]^2;
-//   let tmn = d[m] * off[m];
-//   let tnn = d[n]^2 + off[m]^2;   // ← 注意: off[m] が 2 回使われる
-//   let shift = wilkinson_shift(tmm, tnn, tmn);
-//   //   wilkinson_shift(tmm, tnn, tmn):
-//   //     let d = (tmm - tnn) / 2;
-//   //     tnn - tmn^2 / (d + sign(d)*hypot(d, tmn))
-//
-//   vec = [d[start]^2 - shift, d[start] * off[start]]
-//
-//   for k in start..n:
-//     m12 = if k == n-1 { 0 } else { off[k+1] }
-//     subm = Matrix2x3 {
-//       [d[k],   off[k], 0    ],
-//       [0,      d[k+1], m12  ],
-//     }
-//
-//     // rot1: vec の y を 0 にする右回転 → V に適用
-//     if let Some((rot1, norm1)) = GivensRotation::cancel_y(&vec):
-//       rot1.inverse().rotate_rows(&mut subm[..2, 0..2])  // subm の左2列を rot1^{-1} で行回転
-//       if k > start: off[k-1] = norm1
-//
-//       // rot2: subm の (1,0) を 0 にする左回転 → U に適用
-//       v = [subm[0,0], subm[1,0]]
-//       (rot2, norm2) = GivensRotation::cancel_y(&v)
-//       rot2.rotate(&mut subm[..2, 1..3])  // subm の右2列を rot2 で行回転
-//       subm[0,0] = norm2
-//
-//       // is_upper_diagonal なら:
-//       //   V に rot1 を適用（v_t の k 行目2行）
-//       //   U に rot2.inverse() を適用（u の k 列目2列）
-//
-//       d[k]     = subm[0,0]
-//       d[k+1]   = subm[1,1]
-//       off[k]   = subm[0,1]
-//       if k != n-1: off[k+1] = subm[1,2]
-//
-//       vec.x = subm[0,1]   // 次の f
-//       vec.y = subm[0,2]   // 次の g
-//
-// ─────────────────────────────────────────────────────────────
-// subdim == 2 の処理（svd.rs l.266-303）
-// ─────────────────────────────────────────────────────────────
-//
-//   (u2, s, v2) = compute_2x2_uptrig_svd(d[start], off[start], d[start+1], ...)
-//   d[start]   = s[0]
-//   d[start+1] = s[1]
-//   off[start] = 0
-//   U に u2 を rot_rows で適用
-//   V^t に v2.inverse() を rot で適用
-//   end -= 1
-//
-// ─────────────────────────────────────────────────────────────
-// compute_2x2_uptrig_svd（svd.rs l.840-891）
-// ─────────────────────────────────────────────────────────────
-// 参考: "Computing the Singular Values of 2-by-2 Complex Matrices"
-//       Sanzheng Qiao, Xiaohong Wang
-//
-// fn compute_2x2_uptrig_svd(m11, m12, m22):
-//   denom = hypot(m11+m22, m12) + hypot(m11-m22, m12)
-//   v1 = m11 * m22 * 2 / denom    ← m22 に近い特異値（キャンセルなし）
-//   v2 = denom / 2                 ← m11 に近い特異値
-//
-//   // 右回転 csv を求める
-//   (csv, sgn_v) = GivensRotation::new(m11*m12, v1^2 - m11^2)
-//   //   GivensRotation::new(x, y) → (c, s) s.t. c*x + s*y = hypot(x,y), -s*x + c*y = 0
-//   //   sgn_v = sign(hypot(x,y))
-//   v1 *= sgn_v; v2 *= sgn_v
-//
-//   // 左回転 csu を求める
-//   cu = (m11*csv.c + m12*csv.s) / v1
-//   su = (m22 * csv.s) / v1
-//   (csu, sgn_u) = GivensRotation::new(cu, su)
-//   v1 *= sgn_u; v2 *= sgn_u
-//
-//   return (csu, [v1, v2], csv)
-//
-// ─────────────────────────────────────────────────────────────
-// 現実装の dlasv2 との比較:
-//   nalgebra: hypot(m11+m22, m12) + hypot(m11-m22, m12) で安定な denom
-//   現実装: atan2(2b, a-c)/2 で固有ベクトル角度を計算
-//   → nalgebra の方が数値的に安定（|m11|≈|m22| のとき atan2 は不安定になり得る）
-//
-// ─────────────────────────────────────────────────────────────
-// GivensRotation::new (givens.rs)
-// ─────────────────────────────────────────────────────────────
-//   fn new(x, y) -> (Self, T):
-//     if y == 0:  return (c=1, s=0), sign(x)
-//     if x == 0:  return (c=0, s=sign(y)), |y|
-//     r = hypot(x, y)
-//     (c=x/r, s=y/r), r
-//
-//   fn cancel_y(&v):   // v.y を 0 にする → new(v.x, v.y)
-//   fn cancel_x(&v):   // v.x を 0 にする → new(v.y, v.x) + swap
+    /// nalgebra との完全突合: svd() が返す (U, s, Vt) の再構成・直交性を確認
+    #[test]
+    fn svd_full_reconstruction_vs_nalgebra() {
+        let cases: &[(&str, Vec<Vec<f64>>)] = &[
+            ("3x2", vec![vec![1.0f64,2.0],vec![3.0,4.0],vec![5.0,6.0]]),
+            ("4x3", vec![vec![1.0f64,2.0,3.0],vec![4.0,5.0,6.0],
+                         vec![7.0,8.0,9.0],vec![10.0,11.0,12.0]]),
+            ("5x5-rand", vec![vec![2.0f64,1.0,0.5,0.25,0.1],
+                              vec![1.0,3.0,1.0,0.5, 0.2],
+                              vec![0.5,1.0,4.0,1.0, 0.3],
+                              vec![0.25,0.5,1.0,5.0,0.4],
+                              vec![0.1,0.2,0.3,0.4,6.0]]),
+        ];
+        for (label, a) in cases {
+            let s_ref = nalgebra_singvals(a);
+            let s = svdvals(a);
+            for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
+                let rel = (sr - sf).abs() / sr.max(1e-12);
+                assert!(rel < 1e-8,
+                    "{label} s[{i}]: nalgebra={sr:.8e} flair={sf:.8e} rel={rel:.2e}");
+            }
+            assert_svd_quality(label, a, 1e-10, 1e-10);
+        }
+    }
+}
