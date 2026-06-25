@@ -1,0 +1,60 @@
+flair-rs
+Copyright 2026 The flair-rs authors
+
+This product includes software developed as a Rust port of the FLAIR
+time-series forecasting algorithm, together with supporting numerical
+routines. Portions of this software are derived from third-party works
+listed below. Each such work is distributed under the Apache License,
+Version 2.0, and its original attribution notices are reproduced here as
+required by Section 4(d) of that license.
+
+================================================================================
+1. nalgebra
+================================================================================
+Files derived from this work:
+  - src/svd.rs  (Givens rotations, Householder reflections, Householder
+                 bidiagonalization, 2x2 SVD, and the implicit-shift QR SVD
+                 iteration, ported from `Vec<f64>` from the original generic
+                 implementation)
+
+Origin:   https://github.com/dimforge/nalgebra (tag v0.35.0)
+License:  Apache License, Version 2.0
+Notice:   Copyright 2020 Sébastien Crozet
+
+The algorithmic logic (Householder bidiagonalization followed by an
+implicit-shift QR iteration with Givens rotations) is ported directly from
+nalgebra. The generic type machinery (`ComplexField`, `DefaultAllocator`,
+`OMatrix`/`OVector`) was specialized to `f64` and `Vec<f64>`; this constitutes
+a modification of the original files within the meaning of Section 4(b) of the
+Apache License, Version 2.0.
+
+================================================================================
+2. FLAIR (flaircast)
+================================================================================
+Files derived from this work:
+  - src/constants.rs   (ported from flaircast/_constants.py)
+  - src/frequency.rs   (ported from flaircast/_frequency.py)
+
+Origin:   https://github.com/Mellon-Inc/FLAIR
+License:  Apache License, Version 2.0
+Notice:   Copyright 2026 Takato Honda
+
+These files are Rust ports of the corresponding Python modules and constitute
+modifications within the meaning of Section 4(b) of the Apache License,
+Version 2.0.
+
+================================================================================
+Algorithms referenced (no third-party code reproduced)
+================================================================================
+The following works are referenced for their mathematical algorithms only.
+No source code from these works is included; the implementations are
+independent.
+
+  - Golub, G. & Reinsch, C. (1970). "Singular value decomposition and least
+    squares solutions." Numerische Mathematik 14, 403-420.
+  - Brent, R. P. (1973). "Algorithms for Minimization without Derivatives."
+    Prentice-Hall. (root finding, `brentq`)
+  - Qiao, S. & Wang, W. "Computing the Singular Values of 2-by-2 Complex
+    Matrices." (2x2 SVD)
+  - LAPACK (https://www.netlib.org/lapack/) — routine descriptions referenced
+    in documentation only (see lapack.txt, Flair.md).

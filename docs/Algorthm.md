@@ -2,6 +2,42 @@
 
 flair 時系列予測アルゴリズム
 
+## ライセンスと帰属
+
+本コードは **Apache License, Version 2.0** で配布される。ライセンス全文は同梱の
+[`LICENSE`](./LICENSE)、第三者著作物の帰属表示は [`NOTICE`](./NOTICE) を参照。
+
+### 第三者由来コードの一覧
+
+| ファイル | 由来 | 由来ライセンス | 関係 |
+|---|---|---|---|
+| `src/svd.rs` | [nalgebra v0.35.0](https://github.com/dimforge/nalgebra/tree/v0.35.0)（Copyright 2020 Sébastien Crozet） | Apache-2.0 | 移植・改変（`Vec<f64>` 特殊化） |
+| `src/constants.rs` | [FLAIR (flaircast)](https://github.com/Mellon-Inc/FLAIR) `flaircast/_constants.py`（Copyright 2026 Takato Honda） | Apache-2.0 | Rust へ移植 |
+| `src/frequency.rs` | 同上 `flaircast/_frequency.py` | Apache-2.0 | Rust へ移植 |
+
+> いずれも由来は Apache-2.0。Apache-2.0 §4(b) に従い「改変ファイルである」旨を各ファイル
+> 冒頭の SPDX ヘッダ／出典コメントに明記し、§4(d) に従い原著作権表示を `NOTICE` に集約している。
+
+### 参照のみ（コード非流用）の素材
+
+以下は **数学アルゴリズム（アイデア）のみを参照**しており、ソースコードは一切複製していない。
+独立実装である。
+
+- `src/linalg.rs`: Golub-Reinsch SVD (1970) の独自実装。
+  **Numerical Recipes 掲載コードは独自ライセンスで複製禁止のため一切流用していない。**
+- `src/linalg.rs` `brentq`: Brent (1973) の根探索アルゴリズム。
+- `src/svd.rs` の 2×2 SVD: Qiao & Wang の論文アルゴリズム。
+- `lapack.txt` / 本書の LAPACK 節: [LAPACK](https://www.netlib.org/lapack/) ルーチンの
+  説明（API ドキュメントの参照であり、Fortran ソースの複製ではない）。
+
+### 採用時チェックリスト（flair-rs へ取り込む場合）
+
+- [ ] `LICENSE`（Apache-2.0 全文）をリポジトリ直下に配置（既にあれば統合）。
+- [ ] `NOTICE` の第三者帰属（nalgebra / FLAIR）を flair-rs の `NOTICE` にマージ。
+- [ ] 各 `.rs` 冒頭の `SPDX-License-Identifier: Apache-2.0` ヘッダを維持。
+- [ ] `Cargo.toml` に `license = "Apache-2.0"` を追加（現状未設定）。
+- [ ] `linalg.rs` を採用する場合、Numerical Recipes 非流用の注記を残す。
+
 ## Lapack
 
 ### dgebrd
@@ -915,3 +951,84 @@ samples: Vec<Vec<f64>>  // n_samples × horizon  ← 最終出力
 | `_PHASE_NOISE_K` | 50 | フェーズノイズ計算に使う直近周期数のウィンドウ幅 |
 | `_SHAPE_K` (K=2) | 2 | frozen shape計算に使う直近周期数 |
 | `_N_ALPHAS` | 25 | Soft-Average GCVで試すα候補の数（10⁻⁴〜10⁴の対数等間隔） |
+
+---
+
+## SVD移植コードの検証手順（nalgebra → `src/svd.rs`）
+
+`src/svd.rs` は nalgebra-0.35.0 の SVD（Householder 二重対角化 + implicit-shift QR）を
+`Vec<f64>` にハードコード移植したもの。型を primitive 化（端部処理）する過程で
+**アルゴリズムが原典から逸脱していないか**を以下の手順で検証する。移植・改修のたびに再実行する。
+
+### 検証で実際に発見された逸脱（参考）
+
+型を primitive 化すると、特に **Givens 回転の符号規約**が崩れやすい。過去の検証で以下4点を検出・修正した:
+
+1. `assemble_u`/`assemble_vt` — 原典は反射ごとに `reflect_with_sign(sign=signum(diag))` で符号を織り込む。「反射後に列を一括符号反転」する独自処理は等価でない。
+2. `Givens::rotate`（行ペア左作用）— 原典は `[c·a−s·b; s·a+c·b]`。`s` の符号配置を誤ると転置回転になる（`rotate_rows` とは符号が逆な点に注意）。
+3. QRステップのインライン回転 — `subm` への適用式が #2 と同じ符号誤りを持つと特異値が壊れ、かつ収束しない（無限ループ）。
+4. `cancel_y`/`cancel_x`/`svd_2x2_uptrig` — `cancel_*` の `c,s,r` 符号規約、および 2×2 SVD が `GivensRotation::new`（norm 値を乗算）でなく `cancel_y` を誤用していた。
+
+**症状の特徴**: これらの逸脱があっても**特異値だけは正しく出る**ことがある（特異値は U・Vt の符号に不変なため）。
+`svdvals`／`_period.py` 用途では露見せず、`U·diag(s)·Vt` を使う `_level.py:_ridge_sa` で初めて破綻する。
+したがって**特異値の一致だけでは不十分**で、必ず再構成と直交性まで検証すること。
+
+### 手順1: numpy 非依存の自己検証（一次スクリーニング）
+
+numpy が無くても成立すべき数学的不変量を多数のランダム行列で確認する。
+
+検証する不変量（`A` が m×n, m≥n のとき）:
+- **再構成**: `A ≈ U·diag(s)·Vt`（最重要。U・Vt の整合性を一発で検出）
+- **直交性**: `UᵀU ≈ I`、`Vt·Vtᵀ ≈ I`
+- **特異値**: 降順かつ非負
+- **API一致**: `svdvals(a)` が `svd(a)` の `s` と一致
+
+```bash
+# scratchpad に検証ドライバを置き、svd.rs を #[path] include してコンパイル・実行
+rustc --edition 2024 verify_svd.rs -o verify_svd && ./verify_svd
+# 期待: 全ケース recon/Uorth/Vorth ≤ 1e-9（スケール相対）、"ALL PASS"
+```
+
+対象行列は最低限: 既知の手計算ケース、単位行列、ランク落ち、重複特異値、
+各種サイズ（3×2〜50×20）のランダム多数、桁違いスケール（camax スケーリングの検証）。
+
+### 手順2: nalgebra 実物との突合（中間部品の一致確認）
+
+別ディレクトリに `nalgebra = "0.35"` を依存に持つ使い捨てプロジェクトを作り、
+同一入力で `Bidiagonal::{u, diagonal, off_diagonal, v_t}` と `SVD::new` の出力を出力させ、
+移植版の中間結果（特に二重対角化の `diag`/`off`/U）と値比較する。
+
+```bash
+# ngref/ に nalgebra 依存プロジェクトを作って cargo run
+# 確認ポイント:
+#   - bidiag.diagonal()/off_diagonal() は abs（正）を返す（内部符号付き値とは別）
+#   - A = U · B(abs) · Vt が成立する（B は abs の二重対角行列）
+#   - 移植版 bidiagonalize の U 第1列が nalgebra の U と一致する
+```
+
+### 手順3: numpy/scipy との直接照合（最終確証）
+
+`uv` で numpy/scipy を使い正解値を生成、移植版と突き合わせる。
+
+```bash
+# 正解値生成（PEP 723 インラインメタデータで依存解決）
+uv run --quiet np_ref.py > np_ref.json   # np.linalg.svd(A, full_matrices=False) と scipy.linalg.svdvals
+# 照合（np_ref.json を読んで svd.rs と比較する Rust ドライバ）
+rustc --edition 2024 np_compare.rs -o np_compare && ./np_compare
+# 期待: 特異値の相対誤差 ≤ 1e-9、再構成 ≤ 1e-9、"ALL MATCH numpy/scipy"
+```
+
+照合する量:
+- 特異値 `s`（numpy `s` と一致、降順前提）
+- `svdvals(a)`（scipy `svdvals` をソートした値と一致）
+- 再構成 `U·diag(s)·Vt ≈ A`
+
+> 注意: U・Vt 自体は符号・列順の自由度があり numpy と要素ごとには一致しない。
+> 直接比較するのは**特異値**と**再構成 `U·diag(s)·Vt`**（自由度に不変な量）にすること。
+
+テスト行列にはランク落ち・ゼロ列・近接特異値・大型（100×50 程度）を厚めに含める。
+
+### 合格基準
+
+手順1「ALL PASS」かつ手順3「ALL MATCH numpy/scipy」（相対誤差 ≤ 1e-9）。
+手順2 は逸脱箇所を切り分けるための診断用（毎回必須ではないが、手順1/3 が落ちたら実施）。
