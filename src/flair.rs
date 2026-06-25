@@ -194,6 +194,14 @@ impl Rng {
         let u2 = self.next_f64();
         sqrt(-2.0 * ln(u1)) * cos(2.0 * PI * u2)
     }
+    // Kinderman-Ramage Student-t via normal / sqrt(chi2/nu)
+    fn student_t(&mut self, nu: f64) -> f64 {
+        let z = self.normal();
+        // chi2(nu) ≈ sum of nu normal^2; approximate via normal for large nu
+        let chi2: f64 = (0..nu.min(50.0) as usize).map(|_| { let n = self.normal(); n * n }).sum::<f64>();
+        let chi2 = chi2.max(EPS);
+        z / sqrt(chi2 / nu)
+    }
 }
 
 // ── Box-Cox: golden-section MLE for lambda in [0,1] ───────────────────────
@@ -282,10 +290,11 @@ fn slice_mean(v: &[f64]) -> f64 { v.iter().sum::<f64>() / v.len() as f64 }
 
 // ── Ridge with Soft-Average GCV ────────────────────────────────────────────
 //
-// Returns (beta [nf], loo_residuals [n_train], gcv_min).
+// Returns (beta [nf], loo_residuals [n_train], gcv_min, vt [k×nf], s [k], d_avg [k]).
+// loo は LWCP正規化済み: e_i^LOO / sqrt(1 + h_ii)
 // x_rows: row-major design matrix (n_train rows, each of length nf).
 
-fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> Result<(Vec<f64>, Vec<f64>, f64), Error> {
+fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> Result<(Vec<f64>, Vec<f64>, f64, Vec<Vec<f64>>, Vec<f64>, Vec<f64>), Error> {
     let m = x_rows.len();
     let nf = x_rows[0].len();
 
@@ -336,16 +345,16 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> Result<(Vec<f64>, Vec<f64>, f64),
         for j in 0..k { d_avg[j] += wi * d[j]; }
     }
 
-    // LOO residuals
+    // LWCP-normalized LOO residuals: e_i^LOO / sqrt(1 + h_ii)
     let residuals: Vec<f64> = (0..m).map(|i| {
         y[i] - x_rows[i].iter().zip(beta.iter()).map(|(&xi, &bi)| xi * bi).sum::<f64>()
     }).collect();
     let h_avg: Vec<f64> = (0..m).map(|i| (0..k).map(|j| u[i][j] * u[i][j] * d_avg[j]).sum()).collect();
     let loo: Vec<f64> = residuals.iter().zip(h_avg.iter())
-        .map(|(&ri, &hi)| ri / (1.0 - hi).max(EPS))
+        .map(|(&ri, &hi)| ri / (1.0 - hi).max(EPS) / sqrt((1.0 + hi).max(EPS)))
         .collect();
 
-    Ok((beta, loo, gcv_min))
+    Ok((beta, loo, gcv_min, vt, s, d_avg))
 }
 
 // ── Period selection ───────────────────────────────────────────────────────
@@ -489,6 +498,55 @@ fn compute_damped_trend(l_bc: &[f64], m: usize, n_complete: usize) -> Vec<f64> {
     (0..m).map(|j| {
         let jf = (j + 1) as f64;
         ((n_complete as f64 - 1.0) + phi * (1.0 - pow(phi, jf)) / (1.0 - phi)) / n_complete as f64
+    }).collect()
+}
+
+// ── LWCP leverages (#11) ──────────────────────────────────────────────────
+
+// Per-horizon test-point leverage: h_test[j] = ||Vt @ x_j / s||^2_d_avg
+// x_j は forecast step j のデザイン行ベクトル（point-prediction で更新）
+fn compute_lwcp_leverages(
+    beta: &[f64],
+    l_innov: &[f64],
+    damped_trend: &[f64],
+    vt: &[Vec<f64>],      // k × nf
+    s: &[f64],            // k
+    d_avg: &[f64],        // k
+    n_complete: usize,
+    m: usize,
+    nb: usize,
+    nf: usize,
+    max_cp: usize,
+    use_diff: bool,
+) -> Vec<f64> {
+    let k = s.len();
+    let mut l_point: Vec<f64> = l_innov.to_vec();
+    l_point.resize(n_complete + m, 0.0);
+
+    (0..m).map(|j| {
+        let ti = n_complete + j;
+
+        // point prediction (beta already has β₂ = 1 - δ₂ restored)
+        let pred = beta[0]
+            + beta[1] * damped_trend[j]
+            + beta[nb] * l_point[ti - 1]
+            + if max_cp >= 2 { beta[nb + 1] * l_point[ti - max_cp] } else { 0.0 };
+        l_point[ti] = pred;
+
+        // feature vector x_j
+        let mut x_j = vec![0.0f64; nf];
+        x_j[0] = 1.0;
+        x_j[1] = damped_trend[j];
+        x_j[nb] = if use_diff { -l_point[ti - 1] } else { l_point[ti - 1] };
+        if max_cp >= 2 { x_j[nb + 1] = l_point[ti - max_cp]; }
+
+        // v = Vt @ x_j, h_test = sum((v/s)^2 * d_avg)
+        let h: f64 = (0..k).map(|r| {
+            let v: f64 = (0..nf).map(|c| vt[r][c] * x_j[c]).sum();
+            let u_test = v / s[r].max(EPS);
+            u_test * u_test * d_avg[r]
+        }).sum();
+        h.clamp(0.0, 10.0)
     }).collect()
 }
 
@@ -650,7 +708,7 @@ pub fn forecast(
         (xr, yt)
     };
 
-    let (mut beta, loo_resid, gcv_min) = ridge_sa(&x_rows, &y_target)?;
+    let (mut beta, loo_resid, gcv_min, vt_r, s_r, d_avg_r) = ridge_sa(&x_rows, &y_target)?;
 
     // #6 LSR1: β₂ = 1 - δ₂ を復元
     if use_diff {
@@ -660,12 +718,38 @@ pub fn forecast(
     // #7 Damped trend: phi = max(lag-1 autocorr of diff(L_bc), 0)
     let damped_trend: Vec<f64> = compute_damped_trend(&l_bc, m, n_complete);
 
+    // #11 LWCP: per-horizon test-point leverage
+    let h_test: Vec<f64> = compute_lwcp_leverages(
+        &beta, &l_innov, &damped_trend,
+        &vt_r, &s_r, &d_avg_r,
+        n_complete, m, nb, nf, max_cp, use_diff,
+    );
+
     // ── Stochastic Level paths ──────────────────────────────────────────
     let loo_len = loo_resid.len();
-    // noise_pool[s][j] = random LOO residual for sample s at period step j
-    let noise_pool: Vec<Vec<f64>> = (0..n_samples)
-        .map(|_| (0..m).map(|_| loo_resid[rng.randint(loo_len)]).collect())
-        .collect();
+    // #12 Empirical bootstrap from LWCP-normalized LOO residuals
+    let noise_pool: Vec<Vec<f64>> = if loo_len >= 4 {
+        let loo_mean = slice_mean(&loo_resid);
+        let loo_std = sqrt(loo_resid.iter().map(|&v| pow(v - loo_mean, 2.0)).sum::<f64>()
+            / loo_len as f64).max(EPS);
+        let sigma2_loo = loo_resid.iter().map(|&v| pow(v - loo_mean, 2.0)).sum::<f64>()
+            / loo_len as f64;
+        let loo_unit: Vec<f64> = loo_resid.iter().map(|&v| (v - loo_mean) / loo_std).collect();
+        (0..n_samples).map(|_| {
+            (0..m).map(|j| {
+                loo_unit[rng.randint(loo_len)] * sqrt(sigma2_loo * (1.0 + h_test[j]))
+            }).collect()
+        }).collect()
+    } else {
+        // Student-t fallback (nu = n_train - nf, floor 3)
+        let nu = (n_train.saturating_sub(nf)).max(3) as f64;
+        let sigma2_loo = loo_resid.iter().map(|&v| v * v).sum::<f64>() / loo_len.max(1) as f64;
+        (0..n_samples).map(|_| {
+            (0..m).map(|j| {
+                rng.student_t(nu) * sqrt(sigma2_loo * (1.0 + h_test[j]))
+            }).collect()
+        }).collect()
+    };
 
     // L_paths[s][0..n_complete] = l_innov (history), [n_complete..] = forecast
     let total = n_complete + m;
@@ -758,7 +842,10 @@ pub fn forecast(
         let path: Vec<f64> = (0..horizon).map(|h| {
             let sj = step_idx[h];
             let ph = phase_idx[h];
-            let phase_noise = r_mat[ph][col_idx[si]]; // scenario-coherent: sampleごとに同一列
+            // #11 phase deflation: Level paths already widen via sqrt(1+h_test),
+            // divide phase noise by the same factor to avoid double-counting variance
+            let phase_deflate = 1.0 / sqrt(1.0 + h_test[sj]);
+            let phase_noise = r_mat[ph][col_idx[si]] * phase_deflate;
             l_hat_all[si][sj] * s_forecast[sj][ph] * (1.0 + phase_noise) - y_shift
         }).collect();
         samples.push(path);
@@ -952,7 +1039,34 @@ mod tests {
         ]
     }
 
+    /// LWCP実装のリグレッションテスト。
+    /// Python flaircast 0.6.1 の forecast(seed=0, n_samples=500) との平均予測値比較。
+    /// 許容差: 絶対値で ±15（系列の振れ幅 ~250 の約 6%）。
+    /// seed固定でも確率的なのでタイトにはしない。
     #[test]
+    fn lwcp_vs_python_reference() {
+        // y = 100 + 1.5*t + 20*sin(2π*t/12), t=0..143 (月次・144点)
+        let y: Vec<f64> = (0..144).map(|i| {
+            100.0 + 1.5 * i as f64 + 20.0 * sin(2.0 * PI * i as f64 / 12.0)
+        }).collect();
+
+        // Python flaircast 0.6.1 参照値 (seed=0, n_samples=500)
+        let py_mean = [310.5, 329.0, 343.2, 350.0, 348.1, 338.7,
+                       325.0, 311.3, 301.9, 300.0, 306.8, 321.0];
+
+        let (samples, _) = forecast(&y, 12, &Freq::Monthly, 500, 0).unwrap();
+        let rs_mean: Vec<f64> = (0..12)
+            .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / samples.len() as f64)
+            .collect();
+
+        for h in 0..12 {
+            let diff = (rs_mean[h] - py_mean[h]).abs();
+            assert!(diff < 15.0,
+                "h={h}: rust={:.1} py={:.1} diff={:.1}", rs_mean[h], py_mean[h], diff);
+        }
+    }
+
+#[test]
     fn dataset_iter_no_crash() {
         for ds in datasets() {
             let y = load(&ds);
