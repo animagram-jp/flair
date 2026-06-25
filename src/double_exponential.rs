@@ -312,7 +312,7 @@ fn integrate_core<F>(f: F, target_absolute_error: f64) -> Output
         num_function_evaluations += 2 * weight.len();
 
         // difference in consecutive integral estimates
-        let previous_delta_ln = current_delta.ln();
+        let previous_delta_ln = libm::log(current_delta);
         current_delta = (0.5 * integral - new_contribution).abs();
         integral = 0.5 * integral + new_contribution;
 
@@ -333,7 +333,7 @@ fn integrate_core<F>(f: F, target_absolute_error: f64) -> Output
             break;
         }
         // previousDelta != 0 or would have been kicked out previously
-        let r = current_delta.ln() / previous_delta_ln;
+        let r = libm::log(current_delta) / previous_delta_ln;
 
         if r > 1.9 && r < 2.1 {
             // If convergence theory applied perfectly, r would be 2 in the convergence region.
@@ -378,58 +378,60 @@ impl Output {
 
 // --- test ---
 
-unit_test!(trivial_function_works = |_| 0.5; -1.0..1.0; 1e-14);
-unit_test!(demo_function1_works = |x| (-x / 5.0).exp() * x.powf(-1.0 / 3.0); 0.0..10.0; 1e-6 => 3.6798142583691758);
-unit_test!(demo_function2_works = |x| (1.0 - x).powf(5.0) * x.powf(-1.0 / 3.0); 0.0..1.0; 1e-6 => 0.41768525592055004);
-unit_test!(demo_function3_works = |x| (-x / 5000.0).exp() * (x / 1000.0).powf(-1.0 / 3.0); 0.0..10000.0; 1e-6);
-unit_test!(demo_bad_function1_works = |x| (1.0 - x).powf(0.99); 0.0..1.0; 1e-6 => 0.50251256281407035);
-unit_test!(demo_bad_function2_works = |x| x.abs(); -1.0..1.0; 1e-6 => 1.0; 385);
-unit_test!(demo_bad_function3_works = |x| (0.5 - x.abs()).abs(); -1.0..1.0; 1e-6 => 0.5; 385);
-unit_test!(demo_circle = |x| ((1.0-(x.powi(2))).sqrt()).abs(); -1.0..1.0; 1e-6 => 1.5707963267949);
-unit_test!(demo_bad_circle = |x| ((1.0-(x.powi(2))).sqrt()-0.7).abs(); -1.0..1.0; 1e-4 => 0.420201353577392);
+#[cfg(test)]
+#[allow(unused_macros)]
+mod tests {
+    use super::*;
+    extern crate std;
 
-#![allow(unused_macros)]
+    macro_rules! unit_test {
+    ($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr; $max:expr) => (
+        #[test]
+        fn $name() {
+            let o = integrate($inta, $lim.start, $lim.end, $eps);
+            assert!(o.num_function_evaluations == $max,
+                    "num_function_evaluations is not maxed out. evaluations: {:#?}, max: {:#?}",
+                    o.num_function_evaluations,
+                    $max);
+            assert!((o.integral - $out).abs() <= o.error_estimate,
+                    "error larger then error_estimate. error: {:#?}, estimate: {:#?}",
+                    (o.integral - $out).abs(),
+                    o.error_estimate);
+        }
+    );
+    ($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr) => (
+        #[test]
+        fn $name() {
+            let o = integrate($inta, $lim.start, $lim.end, $eps);
+            assert!(o.error_estimate <= $eps,
+                    "error_estimate larger then asked. estimate: {:#?}, asked: {:#?}",
+                    o.error_estimate,
+                    $eps);
+            assert!((o.integral - $out).abs() <= $eps,
+                    "error larger then asked. error: {:#?}, estimate: {:#?}",
+                    (o.integral - $out).abs(),
+                    $eps);
+        }
+    );
+    ($name:ident = $inta:expr ; $lim:expr; $eps:expr) => (
+        #[test]
+        fn $name() {
+            let o = integrate($inta, $lim.start, $lim.end, $eps);
+            assert!(o.error_estimate <= $eps,
+                    "error_estimate larger then asked. estimate: {:#?}, asked: {:#?}",
+                    o.error_estimate,
+                    $eps);
+        }
+    )
+    }
 
-macro_rules! unit_test {
-($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr; $max:expr) => (
-    #[test]
-    fn $name() {
-        let o = integrate($inta, $lim.start, $lim.end, $eps);
-        //println!("\n{:#?}", o);
-        assert!(o.num_function_evaluations == $max,
-                "num_function_evaluations is not maxed out. evaluations: {:#?}, max: {:#?}",
-                o.num_function_evaluations,
-                $max);
-        assert!((o.integral - $out).abs() <= o.error_estimate,
-                "error larger then error_estimate. error: {:#?}, estimate: {:#?}",
-                (o.integral - $out).abs(),
-                o.error_estimate);
-    }
-);
-($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr) => (
-    #[test]
-    fn $name() {
-        let o = integrate($inta, $lim.start, $lim.end, $eps);
-        //println!("\n{:#?}", o);
-        assert!(o.error_estimate <= $eps,
-                "error_estimate larger then asked. estimate: {:#?}, asked: {:#?}",
-                o.error_estimate,
-                $eps);
-        assert!((o.integral - $out).abs() <= $eps,
-                "error larger then asked. error: {:#?}, estimate: {:#?}",
-                (o.integral - $out).abs(),
-                $eps);
-    }
-);
-($name:ident = $inta:expr ; $lim:expr; $eps:expr) => (
-    #[test]
-    fn $name() {
-        let o = integrate($inta, $lim.start, $lim.end, $eps);
-        //println!("\n{:#?}", o);
-        assert!(o.error_estimate <= $eps,
-                "error_estimate larger then asked. estimate: {:#?}, asked: {:#?}",
-                o.error_estimate,
-                $eps);
-    }
-)
+    unit_test!(trivial_function_works = |_| 0.5; -1.0..1.0; 1e-14);
+    unit_test!(demo_function1_works = |x: f64| (-x / 5.0).exp() * x.powf(-1.0 / 3.0); 0.0..10.0; 1e-6 => 3.6798142583691758);
+    unit_test!(demo_function2_works = |x: f64| (1.0 - x).powf(5.0) * x.powf(-1.0 / 3.0); 0.0..1.0; 1e-6 => 0.41768525592055004);
+    unit_test!(demo_function3_works = |x: f64| (-x / 5000.0).exp() * (x / 1000.0).powf(-1.0 / 3.0); 0.0..10000.0; 1e-6);
+    unit_test!(demo_bad_function1_works = |x: f64| (1.0 - x).powf(0.99); 0.0..1.0; 1e-6 => 0.50251256281407035);
+    unit_test!(demo_bad_function2_works = |x: f64| x.abs(); -1.0..1.0; 1e-6 => 1.0; 385);
+    unit_test!(demo_bad_function3_works = |x: f64| (0.5 - x.abs()).abs(); -1.0..1.0; 1e-6 => 0.5; 385);
+    unit_test!(demo_circle = |x: f64| ((1.0 - x.powi(2)).sqrt()).abs(); -1.0..1.0; 1e-6 => 1.5707963267949);
+    unit_test!(demo_bad_circle = |x: f64| ((1.0 - x.powi(2)).sqrt() - 0.7).abs(); -1.0..1.0; 1e-4 => 0.420201353577392);
 }

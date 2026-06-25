@@ -12,6 +12,7 @@ use core::{
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub mod double_exponential;
 pub mod flair;
 pub mod optshrink;
 #[path = "svd_new.rs"]
