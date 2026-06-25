@@ -13,11 +13,11 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Reference
 
-- [*Mellon-Inc/FLAIR](https://github.com/Mellon-Inc/FLAIR)
+- [*Mellon-Inc/FLAIR 0.6.1](https://github.com/Mellon-Inc/FLAIR)
 - [FLAIR Algorithm Paperar: Xiv:2605.07222](https://arxiv.org/abs/2605.07222)
-- [nalgebra: linear algebra crate](https://crates.io/crates/nalgebra)
-- [quadrature: numerical integration crate](https://crates.io/crates/quadrature)
-- [LAPACK](https://www.netlib.org/lapack/explore-html)
+- [nalgebra 0.35.0](https://github.com/dimforge/nalgebra)
+- [quadrature 0.1.2](https://github.com/Eh2406/quadrature)
+- [LAPACK 3.12.1](https://www.netlib.org/lapack/)
 
 ---
 

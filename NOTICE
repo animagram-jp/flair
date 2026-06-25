@@ -50,7 +50,7 @@ Files derived from this work:
   - src/double_exponential.rs  (double-exponential quadrature integration,
                                 ported from the `quadrature` crate)
 
-Origin:   https://crates.io/crates/quadrature
+Origin:   https://github.com/Eh2406/quadrature (tag 0.1.2)
 License:  BSD 2-Clause License
 Notice:   Copyright John D. Cook
           Originally ported from C++ by John D. Cook:
@@ -76,4 +76,4 @@ independent.
   - Qiao, S. & Wang, W. "Computing the Singular Values of 2-by-2 Complex
     Matrices." (2x2 SVD)
   - LAPACK (https://www.netlib.org/lapack/) — routine descriptions referenced
-    in documentation only (see lapack.txt, Flair.md).
+    in documentation only (see Lapack.md, Flair.md).
