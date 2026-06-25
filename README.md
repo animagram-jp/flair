@@ -7,7 +7,7 @@ Wasm-compilable implement of time series forecasting algorithm FLAIR.
 | Version | Status    | Date      | Description   |
 |---------|-----------|-----------|---------------|
 | 0.1.0   | Released  | 2026-04-09 | initial      |
-| 0.2.0   | Released  | 2026-06-26 | LWCP, follow 0.6.1* |
+| 0.2.0   | Released  | 2026-06-26 | follow 0.6.1* |
 
 This project adheres to [Semantic Versioning](https://semver.org/).
 
@@ -22,6 +22,18 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 ---
 
 [![日本語](https://img.shields.io/badge/言語-日本語-red)](#ja)
+
+## Quick use
+
+```rust
+use flair::{forecast_mean, Freq};
+
+let y: Vec<f64> = vec![/* observed values */];
+let (mean_fc, conf) = forecast_mean(&y, 12, &Freq::Monthly, 200, 42).unwrap();
+// mean_fc: Vec<f64> of length 12
+// conf.rank1: seasonal signal strength (1.0 = strong seasonality)
+// conf.gcv:   Ridge LOO error (lower = more predictable level)
+```
 
 ## Provided Functions
 

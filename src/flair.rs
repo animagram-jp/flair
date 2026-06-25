@@ -40,7 +40,7 @@ impl Freq {
     }
 }
 
-struct FlairStruct;
+pub struct FlairStruct;
 
 impl Flair for FlairStruct {
     fn forecast(

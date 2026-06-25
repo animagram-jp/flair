@@ -18,7 +18,7 @@ pub mod flair;
 pub mod optshrink;
 pub mod svd;
 
-pub use flair::{forecast, forecast_mean, forecast_quantiles};
+pub use flair::{forecast, forecast_mean, forecast_quantiles, FlairStruct};
 
 /// Returns a non-deterministic seed derived from the system clock.
 /// use like: `let forcast = flair::forecast(&y, 12, "M", 100, flair::seed_from_time());`
