@@ -121,6 +121,7 @@ fn get_period(frequency: &Freq) -> usize {
         Freq::Minutely(15) => 4,
         Freq::Minutely(30) => 48,
         Freq::Hourly(1)    => 24,
+        Freq::Hourly(2)    => 12,
         Freq::Hourly(12)   => 2,
         Freq::Daily        => 7,
         Freq::Weekly       => 52,
@@ -139,6 +140,7 @@ fn get_periods(frequency: &Freq) -> Vec<usize> {
         Freq::Minutely(15) => vec![4, 96],
         Freq::Minutely(30) => vec![48, 336],
         Freq::Hourly(1)    => vec![24, 168],
+        Freq::Hourly(2)    => vec![12, 84],
         Freq::Hourly(12)   => vec![2, 14],
         Freq::Daily        => vec![7, 365],
         Freq::Weekly       => vec![52],
@@ -1017,6 +1019,19 @@ mod tests {
                 assert!(v >= y_floor - 1.0, "value below floor: {v}");
             }
         }
+    }
+
+    // #22: Hourly(2) = 2H, period=12, periods=[12,84].
+    #[test]
+    fn hourly_2_freq() {
+        assert!(Freq::hourly(2).is_ok());
+        assert_eq!(get_period(&Freq::Hourly(2)), 12);
+        assert_eq!(get_periods(&Freq::Hourly(2)), vec![12, 84]);
+        // End-to-end smoke: 2H series with 12-step primary seasonality.
+        let y: Vec<f64> = (0..168).map(|i| 50.0 + 10.0 * sin(i as f64 * PI * 2.0 / 12.0)).collect();
+        let (s, _) = forecast(&y, 12, &Freq::Hourly(2), 20, 0).unwrap();
+        assert_eq!(s.len(), 20);
+        assert!(s.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
 
     // #20 + #23: select_period returns svd_s/nc_svd; optshrink is applied to l;
