@@ -729,8 +729,9 @@ pub fn forecast(
 
     // ── Stochastic Level paths ──────────────────────────────────────────
     let loo_len = loo_resid.len();
+    let nu = (n_train.saturating_sub(nf)).max(3); // Student-t df, also used for post-hoc shrinkage
     // #12 Empirical bootstrap from LWCP-normalized LOO residuals
-    let noise_pool: Vec<Vec<f64>> = if loo_len >= 4 {
+    let noise_pool: Vec<Vec<f64>> = if LEVEL_NOISE_MODE == "bootstrap" && loo_len >= 4 {
         let loo_mean = slice_mean(&loo_resid);
         let loo_std = sqrt(loo_resid.iter().map(|&v| pow(v - loo_mean, 2.0)).sum::<f64>()
             / loo_len as f64).max(EPS);
@@ -744,11 +745,10 @@ pub fn forecast(
         }).collect()
     } else {
         // Student-t fallback (nu = n_train - nf, floor 3)
-        let nu = (n_train.saturating_sub(nf)).max(3) as f64;
         let sigma2_loo = loo_resid.iter().map(|&v| v * v).sum::<f64>() / loo_len.max(1) as f64;
         (0..n_samples).map(|_| {
             (0..m).map(|j| {
-                rng.student_t(nu) * sqrt(sigma2_loo * (1.0 + h_test[j]))
+                rng.student_t(nu as f64) * sqrt(sigma2_loo * (1.0 + h_test[j]))
             }).collect()
         }).collect()
     };
@@ -874,6 +874,25 @@ pub fn forecast(
         for path in &mut samples {
             for v in path.iter_mut() {
                 if !v.is_finite() { *v = 0.0; }
+            }
+        }
+    }
+
+    // Post-hoc Student-t shrinkage toward the per-horizon median.
+    // Only applied in "t" noise mode with nu < 50; bootstrap samples already
+    // have unit variance by construction so no shrinkage is needed there.
+    if LEVEL_NOISE_MODE == "t" && nu < 50 {
+        let shrink_t = sqrt(((nu as f64 - 2.0).max(0.5)) / nu as f64);
+        for h in 0..horizon {
+            let mut col: Vec<f64> = samples.iter().map(|p| p[h]).collect();
+            col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+            let med = if n_samples % 2 == 0 {
+                (col[n_samples / 2 - 1] + col[n_samples / 2]) / 2.0
+            } else {
+                col[n_samples / 2]
+            };
+            for path in samples.iter_mut() {
+                path[h] = med + shrink_t * (path[h] - med);
             }
         }
     }
@@ -1019,6 +1038,17 @@ mod tests {
                 assert!(v >= y_floor - 1.0, "value below floor: {v}");
             }
         }
+    }
+
+    // #24: LEVEL_NOISE_MODE constant exists; "bootstrap" default leaves output unchanged.
+    // The "t" shrinkage path is compile-time dead under the default constant,
+    // but we verify the constant is defined and bootstrap output is still finite.
+    #[test]
+    fn level_noise_mode_bootstrap_default() {
+        assert_eq!(LEVEL_NOISE_MODE, "bootstrap", "default must be bootstrap");
+        let y: Vec<f64> = (0..144).map(|i| 100.0 + 20.0 * sin(i as f64 * PI * 2.0 / 12.0)).collect();
+        let (samples, _) = forecast(&y, 12, &Freq::Monthly, 100, 0).unwrap();
+        assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
 
     // #22: Hourly(2) = 2H, period=12, periods=[12,84].
