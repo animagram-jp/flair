@@ -7,110 +7,106 @@ use core::{
     f64::consts::PI,
     result::Result,
 };
-use alloc::{
-    collections::BTreeSet,
-    vec,
-    vec::Vec,
-};
+use alloc::{collections::BTreeSet, vec, vec::Vec};
 use libm::{sqrt, log as ln, exp, pow, sin, cos, round};
-use crate::{constants::*, svd, optshrink, Confidence, Error, Flair, Freq};
+use crate::{Freq, Confidence, Error, constants::*, svd, optshrink, Flair};
 
 // ============================================================
-// Implement
+// forecast, forcast_mean, forecast_quantiles (provided port)
 // ============================================================
 
-impl Freq {
-    pub fn secondly(n: usize) -> Result<Self, Error> {
-        match n {
-            10 => Ok(Freq::Secondly(n)),
-            _ => Err(Error::InvalidFreq(n)),
+// (
+//     y: &[f64],
+//     frequency: &Freq,
+//     horizon: usize,
+//     n_samples: usize,
+//     seed: u64,
+//     covariates: Option<(&[f64], &[f64])>,
+// ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
+pub fn forecast(
+    y: &[f64],
+    frequency: &Freq,
+    horizon: usize,
+    n_samples: usize,
+    seed: u64,
+    covariates: Option<(&[f64], &[f64])>, // (x_historical, x_future)
+) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
+    if y.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
+    if horizon < 1 { return Err(Error::InvalidInput("horizon must be >= 1")); }
+    if n_samples < 1 { return Err(Error::InvalidInput("n_samples must be >= 1")); }
+    if let Some((x_hist, x_future)) = covariates {
+        if x_hist.is_empty() || x_future.is_empty() {
+            return Err(Error::InvalidInput("covariates must not be empty"));
+        }
+        if x_hist.len() % y.len() != 0 {
+            return Err(Error::InvalidInput("x_historical length must be a multiple of y length"));
+        }
+        let k = x_hist.len() / y.len();
+        if x_future.len() != horizon * k {
+            return Err(Error::InvalidInput("x_future length must equal horizon * k"));
         }
     }
-    pub fn minutely(n: usize) -> Result<Self, Error> {
-        match n {
-            5 | 10 | 15 | 30 => Ok(Freq::Minutely(n)),
-            _ => Err(Error::InvalidFreq(n)),
-        }
-    }
-    pub fn hourly(n: usize) -> Result<Self, Error> {
-        match n {
-            1 | 2 | 12 => Ok(Freq::Hourly(n)),
-            _ => Err(Error::InvalidFreq(n)),
-        }
-    }
+    forecast(y, horizon, frequency, n_samples, seed)
 }
 
-pub struct FlairStruct;
+// (
+//     y: &[f64],
+//     frequency: &Freq,
+//     horizon: usize,
+//     n_samples: usize,
+//     seed: u64,
+//     covariates: Option<(&[f64], &[f64])>,
+// ) -> Result<(Vec<f64>, Confidence), Error>;
+pub fn forecast_mean(
+    y: &[f64],
+    frequency: &Freq,
+    horizon: usize,
+    n_samples: usize,
+    seed: u64,
+    _covariates: Option<(&[f64], &[f64])>,
+) -> Result<(Vec<f64>, Confidence), Error>{
+    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
+    let mean = (0..horizon)
+        .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n_samples as f64)
+        .collect();
+    Ok((mean, conf))
+}
 
-impl Flair for FlairStruct {
-    fn forecast(
-        y: &[f64],
-        frequency: &Freq,
-        horizon: usize,
-        n_samples: usize,
-        seed: u64,
-        covariates: Option<(&[f64], &[f64])>, // (x_historical, x_future)
-    ) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
-        if y.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
-        if horizon < 1 { return Err(Error::InvalidInput("horizon must be >= 1")); }
-        if n_samples < 1 { return Err(Error::InvalidInput("n_samples must be >= 1")); }
-        if let Some((x_hist, x_future)) = covariates {
-            if x_hist.is_empty() || x_future.is_empty() {
-                return Err(Error::InvalidInput("covariates must not be empty"));
-            }
-            if x_hist.len() % y.len() != 0 {
-                return Err(Error::InvalidInput("x_historical length must be a multiple of y length"));
-            }
-            let k = x_hist.len() / y.len();
-            if x_future.len() != horizon * k {
-                return Err(Error::InvalidInput("x_future length must equal horizon * k"));
-            }
-        }
-        forecast(y, horizon, frequency, n_samples, seed)
+// (
+//     y: &[f64],
+//     frequency: &Freq,
+//     horizon: usize,
+//     n_samples: usize,
+//     seed: u64,
+//     covariates: Option<(&[f64], &[f64])>,
+//     quantiles: &[f64],
+// ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
+pub fn forecast_quantiles(
+    y: &[f64],
+    frequency: &Freq,
+    horizon: usize,
+    n_samples: usize,
+    seed: u64,
+    _covariates: Option<(&[f64], &[f64])>,
+    quantiles: &[f64],
+) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
+    if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
+        return Err(Error::InvalidInput("quantiles must be non-empty and each value in [0.0, 1.0]"));
     }
-
-    fn forecast_mean(
-        y: &[f64],
-        frequency: &Freq,
-        horizon: usize,
-        n_samples: usize,
-        seed: u64,
-        _covariates: Option<(&[f64], &[f64])>,
-    ) -> Result<(Vec<f64>, Confidence), Error>{
-        let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
-        let mean = (0..horizon)
-            .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n_samples as f64)
-            .collect();
-        Ok((mean, conf))
-    }
-
-    fn forecast_quantiles(
-        y: &[f64],
-        frequency: &Freq,
-        horizon: usize,
-        n_samples: usize,
-        seed: u64,
-        _covariates: Option<(&[f64], &[f64])>,
-        quantiles: &[f64],
-    ) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
-        if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
-            return Err(Error::InvalidInput("quantiles must be non-empty and each value in [0.0, 1.0]"));
-        }
-        let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
-        let result = quantiles.iter().map(|&q| {
-            (0..horizon).map(|h| {
-                let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
-                col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-                let idx = round(q * (n_samples - 1) as f64) as usize;
-                col[idx]
-            }).collect()
-        }).collect();
-        Ok((result, conf))
-    }
+    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
+    let result = quantiles.iter().map(|&q| {
+        (0..horizon).map(|h| {
+            let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
+            col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+            let idx = round(q * (n_samples - 1) as f64) as usize;
+            col[idx]
+        }).collect()
+    }).collect();
+    Ok((result, conf))
 }
 
 // ============================================================
-// Internal
+// internal helper
 // ============================================================
 
 fn get_period(frequency: &Freq) -> usize {
@@ -150,8 +146,6 @@ fn get_periods(frequency: &Freq) -> Vec<usize> {
         _                  => vec![],
     }
 }
-
-// constants imported via `use crate::constants::*`
 
 // ── PRNG: xorshift64 + Box-Muller normal ──────────────────────────────────
 

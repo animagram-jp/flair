@@ -1,13 +1,14 @@
 #![no_std]
+extern crate core;
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-use alloc::vec::Vec;
 use core::{
     fmt::{self, Display},
     result::Result,
 };
+use alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,7 +19,11 @@ pub mod flair;
 pub mod optshrink;
 pub mod svd;
 
-pub use flair::{forecast, forecast_mean, forecast_quantiles, FlairStruct};
+pub use flair::{
+    forecast, 
+    forecast_mean, 
+    forecast_quantiles
+};
 
 /// Returns a non-deterministic seed derived from the system clock.
 /// use like: `let forcast = flair::forecast(&y, 12, "M", 100, flair::seed_from_time());`
@@ -31,38 +36,8 @@ pub fn seed_from_time() -> u64 {
 }
 
 // ============================================================
-// Trait
+// Freq (required as arguments)
 // ============================================================
-
-pub trait Flair {
-    fn forecast(
-            y: &[f64],
-            frequency: &Freq,
-            horizon: usize,
-            n_samples: usize,
-            seed: u64,
-            covariates: Option<(&[f64], &[f64])>,
-        ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
-
-    fn forecast_mean(
-        y: &[f64],
-        frequency: &Freq,
-        horizon: usize,
-        n_samples: usize,
-        seed: u64,
-        covariates: Option<(&[f64], &[f64])>,
-    ) -> Result<(Vec<f64>, Confidence), Error>;
-
-    fn forecast_quantiles(
-        y: &[f64],
-        frequency: &Freq,
-        horizon: usize,
-        n_samples: usize,
-        seed: u64,
-        covariates: Option<(&[f64], &[f64])>,
-        quantiles: &[f64],
-    ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
-}
 
 pub enum Freq {
     Secondly(usize),  // 10
@@ -75,6 +50,31 @@ pub enum Freq {
     Yearly,
 }
 
+impl Freq {
+    pub fn secondly(n: usize) -> Result<Self, Error> {
+        match n {
+            10 => Ok(Freq::Secondly(n)),
+            _ => Err(Error::InvalidFreq(n)),
+        }
+    }
+    pub fn minutely(n: usize) -> Result<Self, Error> {
+        match n {
+            5 | 10 | 15 | 30 => Ok(Freq::Minutely(n)),
+            _ => Err(Error::InvalidFreq(n)),
+        }
+    }
+    pub fn hourly(n: usize) -> Result<Self, Error> {
+        match n {
+            1 | 2 | 12 => Ok(Freq::Hourly(n)),
+            _ => Err(Error::InvalidFreq(n)),
+        }
+    }
+}
+
+// ============================================================
+// Confidence (returned alongside forecasts)
+// ============================================================
+
 pub struct Confidence {
     /// sigma_1^2 / sum(sigma_i^2): rank-1 signal strength (1.0 = single period, ~1/P = flat).
     /// None for Yearly (P=1) or series too short for the Level x Shape decomposition.
@@ -84,7 +84,7 @@ pub struct Confidence {
 }
 
 // ============================================================
-// Error
+// Error (this crate can provide)
 // ============================================================
 
 #[derive(Debug, Clone)]
