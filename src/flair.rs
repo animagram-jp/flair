@@ -1,4 +1,4 @@
-//! FLAIR: Factored Level And Interleaved Ridge (arXiv:2605.07222) by Takato Honda 
+//! FLAIR: Factored Level And Interleaved Ridge (arXiv:2605.07222) by Takato Honda
 
 #![allow(clippy::many_single_char_names, clippy::too_many_arguments)]
 
@@ -9,30 +9,39 @@ use core::{
 };
 use alloc::{collections::BTreeSet, vec, vec::Vec};
 use libm::{sqrt, log as ln, exp, pow, sin, cos, round};
-use crate::{Freq, Confidence, Error, constants::*, svd, optshrink, Flair};
+use crate::{Freq, Confidence, Error, constants::*, svd, optshrink};
 
 // ============================================================
-// forecast, forcast_mean, forecast_quantiles (provided port)
+// forecast, forecast_mean, forecast_quantiles
 // ============================================================
 
-// (
-//     y: &[f64],
-//     frequency: &Freq,
-//     horizon: usize,
-//     n_samples: usize,
-//     seed: u64,
-//     covariates: Option<(&[f64], &[f64])>,
-// ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
+/// Generates Monte-Carlo sample paths for the given time series.
+///
+/// Returns `[n_samples][horizon]` paths. Each row is one independent forecast path.
+/// Use this when the full uncertainty distribution is needed.
+///
+/// `covariates` is currently accepted for API compatibility but not yet used in the model;
+/// pass `None` for standard usage.
+///
+/// # Example
+///
+/// ```rust
+/// use flair::{forecast, Freq};
+/// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
+/// let (paths, conf) = forecast(&y, 6, &Freq::Monthly, 50, 0, None).unwrap();
+/// assert_eq!(paths.len(), 50);
+/// assert_eq!(paths[0].len(), 6);
+/// ```
 pub fn forecast(
     y: &[f64],
     frequency: &Freq,
     horizon: usize,
     n_samples: usize,
     seed: u64,
-    covariates: Option<(&[f64], &[f64])>, // (x_historical, x_future)
-) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
+    covariates: Option<(&[f64], &[f64])>,
+) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
     if y.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
-    if horizon < 1 { return Err(Error::InvalidInput("horizon must be >= 1")); }
+    if horizon < 1  { return Err(Error::InvalidInput("horizon must be >= 1")); }
     if n_samples < 1 { return Err(Error::InvalidInput("n_samples must be >= 1")); }
     if let Some((x_hist, x_future)) = covariates {
         if x_hist.is_empty() || x_future.is_empty() {
@@ -46,59 +55,77 @@ pub fn forecast(
             return Err(Error::InvalidInput("x_future length must equal horizon * k"));
         }
     }
-    forecast(y, horizon, frequency, n_samples, seed)
+    forecast_inner(y, horizon, frequency, n_samples, seed)
 }
 
-// (
-//     y: &[f64],
-//     frequency: &Freq,
-//     horizon: usize,
-//     n_samples: usize,
-//     seed: u64,
-//     covariates: Option<(&[f64], &[f64])>,
-// ) -> Result<(Vec<f64>, Confidence), Error>;
+/// Returns the mean over all sample paths as a single point forecast.
+///
+/// Output is `[horizon]`. Equivalent to averaging the rows of [`forecast`].
+///
+/// `covariates` is currently accepted for API compatibility but not yet used in the model;
+/// pass `None` for standard usage.
+///
+/// # Example
+///
+/// ```rust
+/// use flair::{forecast_mean, Freq};
+/// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
+/// let (mean_fc, conf) = forecast_mean(&y, 6, &Freq::Monthly, 50, 0, None).unwrap();
+/// assert_eq!(mean_fc.len(), 6);
+/// assert!(mean_fc.iter().all(|v| v.is_finite()));
+/// ```
 pub fn forecast_mean(
     y: &[f64],
     frequency: &Freq,
     horizon: usize,
     n_samples: usize,
     seed: u64,
-    _covariates: Option<(&[f64], &[f64])>,
-) -> Result<(Vec<f64>, Confidence), Error>{
-    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
+    covariates: Option<(&[f64], &[f64])>,
+) -> Result<(Vec<f64>, Confidence), Error> {
+    let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates)?;
+    let ns = samples.len() as f64;
     let mean = (0..horizon)
-        .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n_samples as f64)
+        .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / ns)
         .collect();
     Ok((mean, conf))
 }
 
-// (
-//     y: &[f64],
-//     frequency: &Freq,
-//     horizon: usize,
-//     n_samples: usize,
-//     seed: u64,
-//     covariates: Option<(&[f64], &[f64])>,
-//     quantiles: &[f64],
-// ) -> Result<(Vec<Vec<f64>>, Confidence), Error>;
+/// Aggregates sample paths into per-horizon quantiles.
+///
+/// Output is `[quantiles.len()][horizon]`. Pass e.g. `&[0.1, 0.5, 0.9]` to get
+/// pessimistic / median / optimistic forecast bands.
+///
+/// `covariates` is currently accepted for API compatibility but not yet used in the model;
+/// pass `None` for standard usage.
+///
+/// # Example
+///
+/// ```rust
+/// use flair::{forecast_quantiles, Freq};
+/// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
+/// let (bands, _) = forecast_quantiles(&y, 6, &Freq::Monthly, 100, 0, None, &[0.1, 0.5, 0.9]).unwrap();
+/// assert_eq!(bands.len(), 3);
+/// assert!(bands[0][0] <= bands[1][0] && bands[1][0] <= bands[2][0]);
+/// ```
 pub fn forecast_quantiles(
     y: &[f64],
     frequency: &Freq,
     horizon: usize,
     n_samples: usize,
     seed: u64,
-    _covariates: Option<(&[f64], &[f64])>,
+    covariates: Option<(&[f64], &[f64])>,
     quantiles: &[f64],
-) -> Result<(Vec<Vec<f64>>, Confidence), Error>{
+) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
     if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
         return Err(Error::InvalidInput("quantiles must be non-empty and each value in [0.0, 1.0]"));
     }
-    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
+    let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates)?;
+    let ns = samples.len();
     let result = quantiles.iter().map(|&q| {
         (0..horizon).map(|h| {
             let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
             col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-            let idx = round(q * (n_samples - 1) as f64) as usize;
+            let idx = round(q * (ns - 1) as f64) as usize;
             col[idx]
         }).collect()
     }).collect();
@@ -557,7 +584,7 @@ fn compute_cross_periods(
 
 // ── Main forecast function ─────────────────────────────────────────────────
 
-pub fn forecast(
+fn forecast_inner(
     y_raw: &[f64],
     horizon: usize,
     frequency: &Freq,
@@ -911,44 +938,6 @@ pub fn forecast(
     Ok((samples, conf))
 }
 
-pub fn forecast_quantiles(
-    y: &[f64],
-    horizon: usize,
-    frequency: &Freq,
-    n_samples: usize,
-    seed: u64,
-    quantiles: &[f64],
-) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
-    if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
-        return Err(Error::InvalidInput("quantiles must be non-empty and each value in [0.0, 1.0]"));
-    }
-    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
-    let ns = samples.len();
-    let result = quantiles.iter().map(|&q| {
-        (0..horizon).map(|h| {
-            let mut col: Vec<f64> = samples.iter().map(|s| s[h]).collect();
-            col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-            let idx = round(q * (ns - 1) as f64) as usize;
-            col[idx]
-        }).collect()
-    }).collect();
-    Ok((result, conf))
-}
-
-pub fn forecast_mean(
-    y: &[f64],
-    horizon: usize,
-    frequency: &Freq,
-    n_samples: usize,
-    seed: u64,
-) -> Result<(Vec<f64>, Confidence), Error> {
-    let (samples, conf) = forecast(y, horizon, frequency, n_samples, seed)?;
-    let n = samples.len() as f64;
-    let mean = (0..horizon).map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / n).collect();
-    Ok((mean, conf))
-}
-
-
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -961,7 +950,7 @@ mod tests {
     #[test]
     fn output_shape() {
         let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
-        let (s, _) = forecast(&y, 12, &Freq::Monthly, 50, 0).unwrap();
+        let (s, _) = forecast(&y, &Freq::Monthly, 12, 50, 0, None).unwrap();
         assert_eq!(s.len(), 50);
         assert_eq!(s[0].len(), 12);
     }
@@ -979,24 +968,16 @@ mod tests {
 
     #[test]
     fn error_cases() {
-        assert!(forecast(&[], 5, &Freq::hourly(1).unwrap(), 10, 0).is_err());
-        assert!(forecast(&[1.0, 2.0], 0, &Freq::hourly(1).unwrap(), 10, 0).is_err());
-        assert!(forecast(&[1.0, 2.0], 5, &Freq::hourly(1).unwrap(), 0, 0).is_err());
-    }
-
-    #[test]
-    fn forecast_mean_shape() {
-        let y: Vec<f64> = (0..100).map(|i| i as f64).collect();
-        let (m, _) = forecast_mean(&y, 7, &Freq::Daily, 20, 5).unwrap();
-        assert_eq!(m.len(), 7);
-        assert!(m.iter().all(|&v| v.is_finite()));
+        assert!(forecast(&[], &Freq::hourly(1).unwrap(), 5, 10, 0, None).is_err());
+        assert!(forecast(&[1.0, 2.0], &Freq::hourly(1).unwrap(), 0, 10, 0, None).is_err());
+        assert!(forecast(&[1.0, 2.0], &Freq::hourly(1).unwrap(), 5, 0, 0, None).is_err());
     }
 
     #[test]
     fn forecast_quantiles_shape_and_order() {
         let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
         let qs = [0.1, 0.5, 0.9];
-        let (q, _) = forecast_quantiles(&y, 12, &Freq::Monthly, 100, 0, &qs).unwrap();
+        let (q, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 100, 0, None, &qs).unwrap();
         assert_eq!(q.len(), 3);
         assert!(q.iter().all(|row| row.len() == 12));
         for h in 0..12 {
@@ -1007,7 +988,7 @@ mod tests {
     #[test]
     fn forecast_quantiles_invalid_q() {
         let y: Vec<f64> = (0..50).map(|i| i as f64).collect();
-        assert!(forecast_quantiles(&y, 5, &Freq::Monthly, 10, 0, &[0.5, 1.5]).is_err());
+        assert!(forecast_quantiles(&y, &Freq::Monthly, 5, 10, 0, None, &[0.5, 1.5]).is_err());
     }
 
     // #21: +inf must clip to y_hi+y_range (upper), not y_floor (lower).
@@ -1023,7 +1004,7 @@ mod tests {
         let y_range = (y_hi - y_floor).max(1e-6);
         let clip_hi = y_hi + y_range;
 
-        let (samples, _) = forecast(&y, 12, &Freq::Monthly, 200, 0).unwrap();
+        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 200, 0, None).unwrap();
         for path in &samples {
             for &v in path {
                 assert!(v.is_finite(), "non-finite in output: {v}");
@@ -1041,7 +1022,7 @@ mod tests {
     fn level_noise_mode_bootstrap_default() {
         assert_eq!(LEVEL_NOISE_MODE, "bootstrap", "default must be bootstrap");
         let y: Vec<f64> = (0..144).map(|i| 100.0 + 20.0 * sin(i as f64 * PI * 2.0 / 12.0)).collect();
-        let (samples, _) = forecast(&y, 12, &Freq::Monthly, 100, 0).unwrap();
+        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 100, 0, None).unwrap();
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
 
@@ -1053,7 +1034,7 @@ mod tests {
         assert_eq!(get_periods(&Freq::Hourly(2)), vec![12, 84]);
         // End-to-end smoke: 2H series with 12-step primary seasonality.
         let y: Vec<f64> = (0..168).map(|i| 50.0 + 10.0 * sin(i as f64 * PI * 2.0 / 12.0)).collect();
-        let (s, _) = forecast(&y, 12, &Freq::Hourly(2), 20, 0).unwrap();
+        let (s, _) = forecast(&y, &Freq::Hourly(2), 12, 20, 0, None).unwrap();
         assert_eq!(s.len(), 20);
         assert!(s.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
@@ -1082,7 +1063,7 @@ mod tests {
         assert!(nc_svd >= 3, "nc_svd should be >= MIN_COMPLETE");
 
         // End-to-end: output must be finite with the new l_raw/optshrink path.
-        let (samples, conf) = forecast(&y, 12, &freq, 50, 0).unwrap();
+        let (samples, conf) = forecast(&y, &freq, 12, 50, 0, None).unwrap();
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
         assert!(conf.rank1.is_some());
     }
@@ -1146,7 +1127,7 @@ mod tests {
         let py_mean = [310.5, 329.0, 343.2, 350.0, 348.1, 338.7,
                        325.0, 311.3, 301.9, 300.0, 306.8, 321.0];
 
-        let (samples, _) = forecast(&y, 12, &Freq::Monthly, 500, 0).unwrap();
+        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 500, 0, None).unwrap();
         let rs_mean: Vec<f64> = (0..12)
             .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / samples.len() as f64)
             .collect();
@@ -1158,12 +1139,12 @@ mod tests {
         }
     }
 
-#[test]
+    #[test]
     fn dataset_iter_no_crash() {
         for ds in datasets() {
             let y = load(&ds);
             assert!(!y.is_empty(), "{}: empty", ds.file);
-            let (fc, _) = forecast_mean(&y, 12, &ds.frequency, 30, 0)
+            let (fc, _) = forecast_mean(&y, &ds.frequency, 12, 30, 0, None)
                 .unwrap_or_else(|e| panic!("{}: forecast error: {e:?}", ds.file));
             assert_eq!(fc.len(), 12, "{}: wrong horizon", ds.file);
             assert!(fc.iter().all(|v| v.is_finite()), "{}: non-finite output", ds.file);

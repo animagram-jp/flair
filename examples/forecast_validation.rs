@@ -51,7 +51,7 @@ fn test_dataset(name: &str, file: &str, col: usize, skip: usize, frequency: &Fre
     println!("\n=== {} ===", name);
     println!("  total: {} obs, train: {} obs, test: {} obs", y.len(), train.len(), test_actual.len());
 
-    let (fc, conf) = match forecast_mean(train, horizon.min(test_actual.len()), frequency, 100, 42) {
+    let (fc, conf) = match forecast_mean(train, frequency, horizon.min(test_actual.len()), 100, 42, None) {
         Ok(v) => v,
         Err(e) => { println!("  ERROR: {e:?}"); return; }
     };

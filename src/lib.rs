@@ -8,7 +8,6 @@ use core::{
     fmt::{self, Display},
     result::Result,
 };
-use alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};

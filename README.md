@@ -20,7 +20,7 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-[![日本語](https://img.shields.io/badge/言語-日本語-red)](#ja)
+[日本語版はこちら](#ja)
 
 ## Quick use
 
@@ -28,7 +28,7 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 use flair::{forecast_mean, Freq};
 
 let y: Vec<f64> = vec![/* observed values */];
-let (mean_fc, conf) = forecast_mean(&y, 12, &Freq::Monthly, 200, 42).unwrap();
+let (mean_fc, conf) = forecast_mean(&y, &Freq::Monthly, 12, 200, 42, None).unwrap();
 // mean_fc: Vec<f64> of length 12
 // conf.rank1: seasonal signal strength (1.0 = strong seasonality)
 // conf.gcv:   Ridge LOO error (lower = more predictable level)
@@ -45,12 +45,12 @@ let (mean_fc, conf) = forecast_mean(&y, 12, &Freq::Monthly, 200, 42).unwrap();
 - **`seed: u64`** — RNG seed for reproducibility. Pass `seed_from_time()` for non-deterministic output.
 - **`covariates: Option<(&[f64], &[f64])>`** — Optional exogenous variables `(x_historical, x_future)` in row-major layout. `x_historical` length must be a multiple of `y.len()`; `x_future` length must equal `horizon * k` where `k` is the number of covariate columns.
 
-| Fn | Input | Output | Description |
-|----|-------|--------|-------------|
-| `forecast` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<Vec<f64>>, Confidence)>` `[n_samples][horizon]` | Generates Monte-Carlo sample paths. Each row is one forecast path. Use when the full uncertainty distribution is needed. |
-| `forecast_mean` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<f64>, Confidence)>` `[horizon]` | Returns the mean over all sample paths as a single point forecast. |
-| `forecast_quantiles` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates`, `quantiles: &[f64]` | `Result<(Vec<Vec<f64>>, Confidence)>` `[quantile][horizon]` | Aggregates sample paths into quantiles. Pass e.g. `&[0.1, 0.5, 0.9]` to get pessimistic / median / optimistic forecast bands. |
-| `seed_from_time` *(std only)* | — | `u64` | Returns a non-deterministic seed from the system clock. |
+| Fn | Parameter | Output | Description |
+|----|-----------|--------|-------------|
+| `forecast` | `(y, freq, horizon, n_samples, seed, covariates)` | `Result<(Vec<Vec<f64>>, Confidence)>` `[n_samples][horizon]` | Generates Monte-Carlo sample paths. Each row is one forecast path. Use when the full uncertainty distribution is needed. |
+| `forecast_mean` | `(y, freq, horizon, n_samples, seed, covariates)` | `Result<(Vec<f64>, Confidence)>` `[horizon]` | Returns the mean over all sample paths as a single point forecast. |
+| `forecast_quantiles` | `(y, freq, horizon, n_samples, seed, covariates, quantiles: &[f64])` | `Result<(Vec<Vec<f64>>, Confidence)>` `[quantile][horizon]` | Aggregates sample paths into quantiles. Pass e.g. `&[0.1, 0.5, 0.9]` to get pessimistic / median / optimistic forecast bands. |
+| `seed_from_time` *(std only)* | `()` | `u64` | Returns a non-deterministic seed from the system clock. |
 
 ### Freq
 
@@ -139,12 +139,12 @@ Author: Andyou <andyou@animagram.jp>
 
 ### 提供ポート
 
-| Fn | Input | Output | Description |
-|----|-------|--------|-------------|
-| `forecast` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<Vec<f64>>, Confidence)>` `[n_samples][horizon]` | モンテカルロサンプルパスを生成する。各行が1本の予測パス。|
-| `forecast_mean` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates` | `Result<(Vec<f64>, Confidence)>` `[horizon]` | サンプルパスを平均した点予測を返す。最もシンプルな予測用途向け。 |
-| `forecast_quantiles` | `y`, `freq`, `horizon`, `n_samples`, `seed`, `covariates`, `quantiles: &[f64]` | `Result<(Vec<Vec<f64>>, Confidence)>` `[quantile][horizon]` | サンプルパスから指定パーセンタイルを集計する。`&[0.1, 0.5, 0.9]` を渡すと悲観・中央値・楽観の予測帯域を得られる。 |
-| `seed_from_time` *（std のみ）* | — | `u64` | システム時刻からシードを生成する。再現性が不要な場合に各予測関数へ渡す。 |
+| 関数名 | 引数 | 戻り値 | 説明 |
+|----|-----------|--------|-------------|
+| `forecast` | `(y, freq, horizon, n_samples, seed, covariates)` | `Result<(Vec<Vec<f64>>, Confidence)>` `[n_samples][horizon]` | モンテカルロサンプルパスを生成する。各行が1本の予測パス。|
+| `forecast_mean` | `(y, freq, horizon, n_samples, seed, covariates)` | `Result<(Vec<f64>, Confidence)>` `[horizon]` | サンプルパスを平均した点予測を返す。最もシンプルな予測用途向け。 |
+| `forecast_quantiles` | `(y, freq, horizon, n_samples, seed, covariates, quantiles: &[f64])` | `Result<(Vec<Vec<f64>>, Confidence)>` `[quantile][horizon]` | サンプルパスから指定パーセンタイルを集計する。`&[0.1, 0.5, 0.9]` を渡すと悲観・中央値・楽観の予測帯域を得られる。 |
+| `seed_from_time` *（std のみ）* | `()` | `u64` | システム時刻からシードを生成する。再現性が不要な場合に各予測関数へ渡す。 |
 
 ### 予測信頼性 (Confidence)
 

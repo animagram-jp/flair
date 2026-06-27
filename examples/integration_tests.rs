@@ -34,7 +34,7 @@ fn check_japan_demand() {
     println!("  loaded {} hourly observations (Tokyo MW)", y.len());
     let freq = Freq::hourly(1).unwrap();
 
-    let (fc, _) = forecast_mean(&y, 24, &freq, 200, 42).unwrap_or_else(|e| fail("forecast", &format!("{e:?}")));
+    let (fc, _) = forecast_mean(&y, &freq, 24, 200, 42, None).unwrap_or_else(|e| fail("forecast", &format!("{e:?}")));
     println!("  Tokyo next 24h forecast (MW):");
     for (h, v) in fc.iter().enumerate() {
         print!("    +{:02}h: {:.0}", h + 1, v);
@@ -43,9 +43,9 @@ fn check_japan_demand() {
     if fc.len() % 4 != 0 { println!(); }
     pass("forecast shape and finiteness");
 
-    let (a, _) = forecast_mean(&y, 24, &freq, 200, 42).unwrap();
-    let (b, _) = forecast_mean(&y, 24, &freq, 200, 42).unwrap();
-    let (c2, _) = forecast_mean(&y, 24, &freq, 200, 99).unwrap();
+    let (a, _) = forecast_mean(&y, &freq, 24, 200, 42, None).unwrap();
+    let (b, _) = forecast_mean(&y, &freq, 24, 200, 42, None).unwrap();
+    let (c2, _) = forecast_mean(&y, &freq, 24, 200, 99, None).unwrap();
     if a != b  { fail("determinism", "same seed produced different results"); }
     if a == c2 { fail("determinism", "different seeds produced identical results"); }
     pass("determinism (same seed identical; different seed differs)");
@@ -69,7 +69,7 @@ fn check_elec_per_capita() {
         };
         println!("  loaded {} annual observations (kWh/capita)", y.len());
 
-        let (fc, _) = forecast_mean(&y, 3, &Freq::Yearly, 200, 42).unwrap_or_else(|e| fail("forecast", &format!("{e:?}")));
+        let (fc, _) = forecast_mean(&y, &Freq::Yearly, 3, 200, 42, None).unwrap_or_else(|e| fail("forecast", &format!("{e:?}")));
         println!("  next 3y forecast (kWh/capita):");
         for (h, v) in fc.iter().enumerate() {
             println!("    +{}y: {:.0}", h + 1, v);
