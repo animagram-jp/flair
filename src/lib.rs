@@ -67,7 +67,7 @@ pub trait Flair {
 pub enum Freq {
     Secondly(usize),  // 10
     Minutely(usize),  // 5, 10, 15, 30
-    Hourly(usize),    // 1, 12
+    Hourly(usize),    // 1, 2, 12
     Daily,
     Weekly,
     Monthly,

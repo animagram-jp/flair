@@ -34,7 +34,7 @@ impl Freq {
     }
     pub fn hourly(n: usize) -> Result<Self, Error> {
         match n {
-            1 | 12 => Ok(Freq::Hourly(n)),
+            1 | 2 | 12 => Ok(Freq::Hourly(n)),
             _ => Err(Error::InvalidFreq(n)),
         }
     }
@@ -1017,6 +1017,35 @@ mod tests {
                 assert!(v >= y_floor - 1.0, "value below floor: {v}");
             }
         }
+    }
+
+    // #20 + #23: select_period returns svd_s/nc_svd; optshrink is applied to l;
+    // l_raw (pre-shrinkage) is used for phase-noise residuals.
+    // We verify that: (a) select_period returns a non-trivial svd_s for a periodic series,
+    // (b) forecast still produces finite output (regression guard for the l_raw change).
+    #[test]
+    fn select_period_returns_svd_and_l_raw_used() {
+        // Strong monthly signal → select_period should pick P=12, returning real svd_s.
+        use libm::sin;
+        let y: Vec<f64> = (0..144)
+            .map(|i| 100.0 + 20.0 * sin(i as f64 * core::f64::consts::PI * 2.0 / 12.0))
+            .collect();
+        let n = y.len();
+        let freq = Freq::Monthly;
+        // Shift y to be positive (mirrors forecast() preprocessing)
+        let y_shift = (1.0 - y.iter().cloned().fold(f64::INFINITY, f64::min)).max(1.0);
+        let y_shifted: Vec<f64> = y.iter().map(|&v| v + y_shift).collect();
+
+        let (p, _sec, _period, _cal, svd_s, nc_svd) = select_period(&y_shifted, n, &freq);
+        assert_eq!(p, 12, "expected P=12 for monthly series");
+        assert!(svd_s.len() >= 2, "svd_s should have ≥2 values for P=12");
+        assert!(svd_s[0] > svd_s[1], "svd_s should be descending");
+        assert!(nc_svd >= 3, "nc_svd should be >= MIN_COMPLETE");
+
+        // End-to-end: output must be finite with the new l_raw/optshrink path.
+        let (samples, conf) = forecast(&y, 12, &freq, 50, 0).unwrap();
+        assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+        assert!(conf.rank1.is_some());
     }
 
     // ── dataset-iter tests ────────────────────────────────────────────────
