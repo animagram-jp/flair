@@ -13,7 +13,7 @@ use alloc::{
     vec::Vec,
 };
 use libm::{sqrt, log as ln, exp, pow, sin, cos, round};
-use crate::{constants::*, svd, Confidence, Error, Flair, Freq};
+use crate::{constants::*, svd, optshrink, Confidence, Error, Flair, Freq};
 
 // ============================================================
 // Implement
@@ -344,8 +344,10 @@ fn ridge_sa(x_rows: &[Vec<f64>], y: &[f64]) -> Result<(Vec<f64>, Vec<f64>, f64, 
 
 // ── Period selection ───────────────────────────────────────────────────────
 
-/// Returns (P, secondary_periods, primary_period, calendar_periods).
-fn select_period(y: &[f64], n: usize, frequency: &Freq) -> (usize, Vec<usize>, usize, Vec<usize>) {
+/// Returns (P, secondary_periods, primary_period, calendar_periods, svd_s, nc_svd).
+/// svd_s and nc_svd are the singular values and n_complete from the winning candidate's
+/// period-folded matrix, reused by optshrink to avoid a second SVD ("One SVD" principle).
+fn select_period(y: &[f64], n: usize, frequency: &Freq) -> (usize, Vec<usize>, usize, Vec<usize>, Vec<f64>, usize) {
     let period = get_period(frequency);
     let cal = get_periods(frequency);
 
@@ -359,35 +361,39 @@ fn select_period(y: &[f64], n: usize, frequency: &Freq) -> (usize, Vec<usize>, u
         candidates.push(if n / p >= MIN_COMPLETE { p } else { 1 });
     }
 
-    let big_p = {
-        let min_cand = *candidates.iter().min().unwrap();
-        let t_max = n.min(MAX_COMPLETE * min_cand);
-        let y_sel = &y[y.len().saturating_sub(t_max)..];
+    let min_cand = *candidates.iter().min().unwrap();
+    let t_max = n.min(MAX_COMPLETE * min_cand);
+    let y_sel = &y[y.len().saturating_sub(t_max)..];
 
-        // P=1 null: mean + noise, 1 parameter
-        let mean = slice_mean(y_sel);
-        let rss_null: f64 = y_sel.iter().map(|&v| pow(v - mean, 2.0)).sum();
-        let bic_null = t_max as f64 * ln((rss_null / t_max as f64).max(EPS_LOG)) + ln(t_max as f64);
-        let mut best_p = 1usize;
-        let mut best_bic = bic_null;
+    // P=1 null: mean + noise, 1 parameter
+    let mean = slice_mean(y_sel);
+    let rss_null: f64 = y_sel.iter().map(|&v| pow(v - mean, 2.0)).sum();
+    let bic_null = t_max as f64 * ln((rss_null / t_max as f64).max(EPS_LOG)) + ln(t_max as f64);
+    let mut best_p = 1usize;
+    let mut best_bic = bic_null;
+    let mut best_svd_s: Vec<f64> = alloc::vec![0.0];
+    let mut best_nc_svd: usize = 0;
 
-        for &p_cand in &candidates {
-            let nc = t_max / p_cand;
-            if nc < MIN_COMPLETE { continue; }
-            let start = y_sel.len() - nc * p_cand;
-            let y_use = &y_sel[start..];
-            let mat_c: Vec<Vec<f64>> = (0..p_cand).map(|ph| (0..nc).map(|ci| y_use[ci * p_cand + ph]).collect()).collect();
-            let s = svd::svdvals(&mat_c);
-            let rss1: f64 = s.iter().skip(1).map(|&v| v * v).sum();
-            let t = (nc * p_cand) as f64;
-            let bic = t * ln((rss1 / t).max(EPS_LOG)) + (p_cand + nc - 1) as f64 * ln(t);
-            if bic < best_bic { best_bic = bic; best_p = p_cand; }
+    for &p_cand in &candidates {
+        let nc = t_max / p_cand;
+        if nc < MIN_COMPLETE { continue; }
+        let start = y_sel.len() - nc * p_cand;
+        let y_use = &y_sel[start..];
+        let mat_c: Vec<Vec<f64>> = (0..p_cand).map(|ph| (0..nc).map(|ci| y_use[ci * p_cand + ph]).collect()).collect();
+        let s = svd::svdvals(&mat_c);
+        let rss1: f64 = s.iter().skip(1).map(|&v| v * v).sum();
+        let t = (nc * p_cand) as f64;
+        let bic = t * ln((rss1 / t).max(EPS_LOG)) + (p_cand + nc - 1) as f64 * ln(t);
+        if bic < best_bic {
+            best_bic = bic;
+            best_p = p_cand;
+            best_svd_s = s;
+            best_nc_svd = nc;
         }
-        best_p
-    };
+    }
 
-    let secondary: Vec<usize> = cal.iter().copied().filter(|&p| p > big_p).collect();
-    (big_p, secondary, period, cal)
+    let secondary: Vec<usize> = cal.iter().copied().filter(|&p| p > best_p).collect();
+    (best_p, secondary, period, cal, best_svd_s, best_nc_svd)
 }
 
 // ── Shape₂: MDL-gated prior shrinkage on Level series ─────────────────────
@@ -576,12 +582,15 @@ pub fn forecast(
     let n = y.len();
 
     // ── Period selection ────────────────────────────────────────────────
-    let (mut big_p, mut secondary, period, _cal) = select_period(&y, n, frequency);
+    let (mut big_p, mut secondary, period, _cal, mut svd_s, mut nc_svd) = select_period(&y, n, frequency);
     let mut n_complete = n / big_p;
 
     // Fallback for too-short series
     if n_complete < MIN_COMPLETE {
-        if big_p > 1 { big_p = 1; secondary.clear(); n_complete = n; }
+        if big_p > 1 {
+            big_p = 1; secondary.clear(); n_complete = n;
+            svd_s = alloc::vec![0.0]; nc_svd = 0; // invalidate stale SVD
+        }
         if n_complete < MIN_COMPLETE {
             let fc_val = y[n - 1] - y_shift;
             let lookback = PHASE_NOISE_K.min(n);
@@ -610,6 +619,7 @@ pub fn forecast(
             big_p = 1;
             secondary.clear();
             n_complete = n;
+            svd_s = alloc::vec![0.0]; nc_svd = 0; // invalidate stale SVD
         }
     }
 
@@ -627,9 +637,14 @@ pub fn forecast(
         .map(|ph| (0..n_complete).map(|ci| y_trim[ci * big_p + ph]).collect())
         .collect();
     // Period-level aggregation
-    let l: Vec<f64> = (0..n_complete)
+    let l_raw: Vec<f64> = (0..n_complete)
         .map(|ci| (0..big_p).map(|ph| mat[ph][ci]).sum())
         .collect();
+
+    // Gavish-Donoho optimal Frobenius shrinkage ("One SVD": reuse svd_s from select_period).
+    // l_raw is kept for phase-noise residuals (using shrunk l would bias residuals positive).
+    let shrink = optshrink::optshrink_factor(&svd_s, big_p, if nc_svd > 0 { nc_svd } else { n_complete });
+    let l: Vec<f64> = l_raw.iter().map(|&v| v * shrink).collect();
 
     // ── Shape estimation ────────────────────────────────────────────────
     let (s_forecast, s_hist, m) = estimate_shape(&mat, n_complete, big_p, &secondary, &l, horizon);
@@ -771,7 +786,8 @@ pub fn forecast(
     }
 
     // ── Phase noise (relative residual quantiles) ───────────────────────
-    // fitted_mat[ph][ci] = s_hist[ci][ph] * l[ci]
+    // fitted_mat[ph][ci] = s_hist[ci][ph] * l_raw[ci]  (pre-shrinkage L)
+    // Using l_raw avoids positive bias in the residual matrix (Finding 3).
     // R[ph][kr_idx] = relative residual over last k_r periods
     let k_r = PHASE_NOISE_K.min(n_complete);
 
@@ -781,7 +797,7 @@ pub fn forecast(
         let mut vals: Vec<f64> = Vec::new();
         for ph in 0..big_p {
             for ci in n_complete - k_r..n_complete {
-                let f = (s_hist[ci][ph] * l[ci]).abs();
+                let f = (s_hist[ci][ph] * l_raw[ci]).abs();
                 if f > EPS { vals.push(f); }
             }
         }
@@ -797,7 +813,7 @@ pub fn forecast(
 
     let mut r_mat: Vec<Vec<f64>> = (0..big_p).map(|ph| {
         (n_complete - k_r..n_complete).map(|ci| {
-            let fitted = s_hist[ci][ph] * l[ci];
+            let fitted = s_hist[ci][ph] * l_raw[ci];
             (mat[ph][ci] - fitted) / fitted.abs().max(fitted_clamp)
         }).collect()
     }).collect();
@@ -844,10 +860,12 @@ pub fn forecast(
         let y_hi    = valid_rec.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let y_range = (y_hi - valid_rec.iter().cloned().fold(f64::INFINITY, f64::min)).max(EPS_SHAPE);
         let y_floor = valid_all.iter().cloned().fold(f64::INFINITY, f64::min);
+        let clip_hi = y_hi + y_range;
         for path in &mut samples {
             for v in path.iter_mut() {
-                if !v.is_finite() { *v = y_floor; }
-                else { *v = v.clamp(y_floor, y_hi + y_range); }
+                if v.is_nan() || *v == f64::NEG_INFINITY { *v = 0.0; }
+                else if *v == f64::INFINITY { *v = clip_hi; }
+                else { *v = v.clamp(y_floor, clip_hi); }
             }
         }
     } else {
@@ -868,10 +886,10 @@ pub fn forecast(
         }
     }
 
+    // Reuse svd_s from select_period (One SVD principle; same matrix as mat).
     let rank1 = {
-        let s = svd::svdvals(&mat);
-        let total: f64 = s.iter().map(|&v| v * v).sum();
-        if total < EPS || big_p < 2 { None } else { Some(s[0] * s[0] / total) }
+        let total: f64 = svd_s.iter().map(|&v| v * v).sum();
+        if total < EPS || big_p < 2 { None } else { Some(svd_s[0] * svd_s[0] / total) }
     };
     let conf = Confidence { rank1, gcv: Some(gcv_min) };
 
@@ -975,6 +993,30 @@ mod tests {
     fn forecast_quantiles_invalid_q() {
         let y: Vec<f64> = (0..50).map(|i| i as f64).collect();
         assert!(forecast_quantiles(&y, 5, &Freq::Monthly, 10, 0, &[0.5, 1.5]).is_err());
+    }
+
+    // #21: +inf must clip to y_hi+y_range (upper), not y_floor (lower).
+    // We verify that all samples are within [y_min, y_max + y_range] and that
+    // no sample equals the floor when overflow would push it up.
+    #[test]
+    fn clip_posinf_upper_not_lower() {
+        // Monotone rising series so y_floor << y_hi; an upward overflow must
+        // land at the upper clip, not collapse to the floor.
+        let y: Vec<f64> = (1..=120).map(|i| i as f64).collect();
+        let y_floor = 1.0f64;
+        let y_hi    = 120.0f64;
+        let y_range = (y_hi - y_floor).max(1e-6);
+        let clip_hi = y_hi + y_range;
+
+        let (samples, _) = forecast(&y, 12, &Freq::Monthly, 200, 0).unwrap();
+        for path in &samples {
+            for &v in path {
+                assert!(v.is_finite(), "non-finite in output: {v}");
+                assert!(v <= clip_hi + 1.0, "+inf clipped above upper: {v} > {clip_hi}");
+                // The key regression: +inf must NOT land at y_floor
+                assert!(v >= y_floor - 1.0, "value below floor: {v}");
+            }
+        }
     }
 
     // ── dataset-iter tests ────────────────────────────────────────────────
