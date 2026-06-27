@@ -1,3 +1,5 @@
+// This file includes untranslated text (ja).
+
 # LAPACK 参照まとめ
 
 Flair.md に言及されている LAPACK ルーティンとその依存関係
