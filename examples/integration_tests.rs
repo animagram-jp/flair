@@ -35,6 +35,7 @@ fn check_japan_demand() {
     let freq = Freq::hourly(1).unwrap();
 
     let (fc, _) = forecast_mean(&y, &freq, 24, 200, 42, None).unwrap_or_else(|e| fail("forecast", &format!("{e:?}")));
+
     println!("  Tokyo next 24h forecast (MW):");
     for (h, v) in fc.iter().enumerate() {
         print!("    +{:02}h: {:.0}", h + 1, v);

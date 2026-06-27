@@ -28,7 +28,7 @@ use crate::{Freq, Confidence, Error, constants::*, svd, optshrink};
 /// ```rust
 /// use flair::{forecast, Freq};
 /// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
-/// let (paths, conf) = forecast(&y, 6, &Freq::Monthly, 50, 0, None).unwrap();
+/// let (paths, conf) = forecast(&y, &Freq::Monthly, 6, 50, 0, None).unwrap();
 /// assert_eq!(paths.len(), 50);
 /// assert_eq!(paths[0].len(), 6);
 /// ```
@@ -43,7 +43,7 @@ pub fn forecast(
     if y.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
     if horizon < 1  { return Err(Error::InvalidInput("horizon must be >= 1")); }
     if n_samples < 1 { return Err(Error::InvalidInput("n_samples must be >= 1")); }
-    if let Some((x_hist, x_future)) = covariates {
+    let exog = if let Some((x_hist, x_future)) = covariates {
         if x_hist.is_empty() || x_future.is_empty() {
             return Err(Error::InvalidInput("covariates must not be empty"));
         }
@@ -54,8 +54,15 @@ pub fn forecast(
         if x_future.len() != horizon * k {
             return Err(Error::InvalidInput("x_future length must equal horizon * k"));
         }
-    }
-    forecast_inner(y, horizon, frequency, n_samples, seed)
+        // Convert flat row-major slices to Vec<Vec<f64>> matrices (n×k and horizon×k)
+        let n = y.len();
+        let xh: Vec<Vec<f64>> = (0..n).map(|i| (0..k).map(|j| x_hist[i * k + j]).collect()).collect();
+        let xf: Vec<Vec<f64>> = (0..horizon).map(|i| (0..k).map(|j| x_future[i * k + j]).collect()).collect();
+        Some((xh, xf, k))
+    } else {
+        None
+    };
+    forecast_inner(y, horizon, frequency, n_samples, seed, exog)
 }
 
 /// Returns the mean over all sample paths as a single point forecast.
@@ -70,7 +77,7 @@ pub fn forecast(
 /// ```rust
 /// use flair::{forecast_mean, Freq};
 /// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
-/// let (mean_fc, conf) = forecast_mean(&y, 6, &Freq::Monthly, 50, 0, None).unwrap();
+/// let (mean_fc, conf) = forecast_mean(&y, &Freq::Monthly, 6, 50, 0, None).unwrap();
 /// assert_eq!(mean_fc.len(), 6);
 /// assert!(mean_fc.iter().all(|v| v.is_finite()));
 /// ```
@@ -103,7 +110,7 @@ pub fn forecast_mean(
 /// ```rust
 /// use flair::{forecast_quantiles, Freq};
 /// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
-/// let (bands, _) = forecast_quantiles(&y, 6, &Freq::Monthly, 100, 0, None, &[0.1, 0.5, 0.9]).unwrap();
+/// let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 6, 100, 0, None, &[0.1, 0.5, 0.9]).unwrap();
 /// assert_eq!(bands.len(), 3);
 /// assert!(bands[0][0] <= bands[1][0] && bands[1][0] <= bands[2][0]);
 /// ```
@@ -523,13 +530,16 @@ fn compute_lwcp_leverages(
     beta: &[f64],
     l_innov: &[f64],
     damped_trend: &[f64],
-    vt: &[Vec<f64>],      // k × nf
-    s: &[f64],            // k
-    d_avg: &[f64],        // k
+    x_future_l_std: &[Vec<f64>], // (m, n_exog) — empty slice when n_exog=0
+    vt: &[Vec<f64>],              // k × nf_total
+    s: &[f64],                    // k
+    d_avg: &[f64],                // k
     n_complete: usize,
     m: usize,
     nb: usize,
     nf: usize,
+    nf_total: usize,
+    n_exog: usize,
     max_cp: usize,
     use_diff: bool,
 ) -> Vec<f64> {
@@ -541,22 +551,30 @@ fn compute_lwcp_leverages(
         let ti = n_complete + j;
 
         // point prediction (beta already has β₂ = 1 - δ₂ restored)
-        let pred = beta[0]
+        let mut pred = beta[0]
             + beta[1] * damped_trend[j]
             + beta[nb] * l_point[ti - 1]
             + if max_cp >= 2 { beta[nb + 1] * l_point[ti - max_cp] } else { 0.0 };
+        if n_exog > 0 {
+            let xf = &x_future_l_std[j];
+            for e in 0..n_exog { pred += beta[nf + e] * xf[e]; }
+        }
         l_point[ti] = pred;
 
-        // feature vector x_j
-        let mut x_j = vec![0.0f64; nf];
+        // feature vector x_j (length nf_total)
+        let mut x_j = vec![0.0f64; nf_total];
         x_j[0] = 1.0;
         x_j[1] = damped_trend[j];
         x_j[nb] = if use_diff { -l_point[ti - 1] } else { l_point[ti - 1] };
         if max_cp >= 2 { x_j[nb + 1] = l_point[ti - max_cp]; }
+        if n_exog > 0 {
+            let xf = &x_future_l_std[j];
+            for e in 0..n_exog { x_j[nf + e] = xf[e]; }
+        }
 
         // v = Vt @ x_j, h_test = sum((v/s)^2 * d_avg)
         let h: f64 = (0..k).map(|r| {
-            let v: f64 = (0..nf).map(|c| vt[r][c] * x_j[c]).sum();
+            let v: f64 = (0..nf_total).map(|c| vt[r][c] * x_j[c]).sum();
             let u_test = v / s[r].max(EPS);
             u_test * u_test * d_avg[r]
         }).sum();
@@ -582,6 +600,35 @@ fn compute_cross_periods(
     (cross_periods, max_cp)
 }
 
+// ── Exog NaN cleanup (column-wise) ────────────────────────────────────────
+
+/// Column-wise NaN linear interpolation for a (rows × k) matrix stored as Vec<Vec<f64>>.
+/// For x_future columns that are entirely NaN, fills with the last valid value of the
+/// corresponding x_hist column (one-step persistence assumption).
+fn clean_exog_nan(
+    xh: &mut Vec<Vec<f64>>,
+    xf: &mut Vec<Vec<f64>>,
+    k: usize,
+) {
+    for j in 0..k {
+        // x_hist column
+        let col_h: Vec<f64> = xh.iter().map(|r| r[j]).collect();
+        let clean_h = interp_nan(&col_h);
+        for (i, r) in xh.iter_mut().enumerate() { r[j] = clean_h[i]; }
+
+        // x_future column — fall back to last valid x_hist value if all NaN
+        let last_hist = *clean_h.last().unwrap_or(&0.0);
+        let col_f: Vec<f64> = xf.iter().map(|r| r[j]).collect();
+        let all_nan = col_f.iter().all(|v| v.is_nan());
+        let clean_f = if all_nan {
+            vec![last_hist; col_f.len()]
+        } else {
+            interp_nan(&col_f)
+        };
+        for (i, r) in xf.iter_mut().enumerate() { r[j] = clean_f[i]; }
+    }
+}
+
 // ── Main forecast function ─────────────────────────────────────────────────
 
 fn forecast_inner(
@@ -590,6 +637,7 @@ fn forecast_inner(
     frequency: &Freq,
     n_samples: usize,
     seed: u64,
+    exog: Option<(Vec<Vec<f64>>, Vec<Vec<f64>>, usize)>,
 ) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
     if y_raw.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
     if horizon < 1     { return Err(Error::InvalidInput("horizon must be >= 1")); }
@@ -603,6 +651,15 @@ fn forecast_inner(
     let y_shift = (1.0 - y_floor).max(1.0);
     y.iter_mut().for_each(|v| *v += y_shift);
     let n = y.len();
+
+    // Exog: NaN cleanup
+    let (mut x_hist_mat, x_future_mat, n_exog) = match exog {
+        Some((mut xh, mut xf, k)) => {
+            clean_exog_nan(&mut xh, &mut xf, k);
+            (xh, xf, k)
+        }
+        None => (vec![], vec![], 0),
+    };
 
     // ── Period selection ────────────────────────────────────────────────
     let (mut big_p, mut secondary, period, _cal, mut svd_s, mut nc_svd) = select_period(&y, n, frequency);
@@ -637,7 +694,7 @@ fn forecast_inner(
     if big_p > 1 {
         let (_, max_cp_est) = compute_cross_periods(&secondary, big_p, period, n_complete);
         let start_est = if max_cp_est >= 2 { max_cp_est } else { 1 };
-        let nf_est = 2 + 1 + if max_cp_est >= 2 { 1 } else { 0 }; // nb + n_lag (no exog)
+        let nf_est = 2 + 1 + if max_cp_est >= 2 { 1 } else { 0 } + n_exog;
         if n_complete.saturating_sub(start_est) < 2 * nf_est {
             big_p = 1;
             secondary.clear();
@@ -648,7 +705,11 @@ fn forecast_inner(
 
     // Cap history to MAX_COMPLETE periods
     if n_complete > MAX_COMPLETE {
-        y = y[y.len() - MAX_COMPLETE * big_p..].to_vec();
+        let trim = MAX_COMPLETE * big_p;
+        y = y[y.len() - trim..].to_vec();
+        if !x_hist_mat.is_empty() {
+            x_hist_mat = x_hist_mat[x_hist_mat.len() - trim..].to_vec();
+        }
         n_complete = MAX_COMPLETE;
     }
 
@@ -671,6 +732,31 @@ fn forecast_inner(
 
     // ── Shape estimation ────────────────────────────────────────────────
     let (s_forecast, s_hist, m) = estimate_shape(&mat, n_complete, big_p, &secondary, &l, horizon);
+
+    // ── Exog Level aggregation (period mean, matching _aggregate_exog_to_level) ──
+    // x_l_raw[ci][j] = mean of x_hist_mat rows in period ci for covariate j
+    // x_future_l_raw[step][j] = mean of x_future_mat rows in that P-block
+    let (x_l_raw, x_future_l_raw): (Vec<Vec<f64>>, Vec<Vec<f64>>) = if n_exog > 0 {
+        let usable_xh = &x_hist_mat[x_hist_mat.len() - usable..];
+        let xl: Vec<Vec<f64>> = (0..n_complete).map(|ci| {
+            (0..n_exog).map(|j| {
+                let s: f64 = (0..big_p).map(|p| usable_xh[ci * big_p + p][j]).sum();
+                s / big_p as f64
+            }).collect()
+        }).collect();
+        let xfl: Vec<Vec<f64>> = (0..m).map(|step| {
+            (0..n_exog).map(|j| {
+                let s_idx = step * big_p;
+                let e_idx = ((step + 1) * big_p).min(horizon);
+                let count = e_idx - s_idx;
+                let s: f64 = (s_idx..e_idx).map(|i| x_future_mat[i][j]).sum();
+                s / count as f64
+            }).collect()
+        }).collect();
+        (xl, xfl)
+    } else {
+        (vec![], vec![])
+    };
 
     // ── Cross-period / Shape₂ ───────────────────────────────────────────
     let (cross_periods, mut max_cp) = compute_cross_periods(&secondary, big_p, period, n_complete);
@@ -701,7 +787,31 @@ fn forecast_inner(
     let nb = 2usize; // intercept + trend
     let n_lag = if max_cp >= 2 { 2 } else { 1 };
     let nf = nb + n_lag;
+    let nf_total = nf + n_exog;
     let n_train = n_complete - start;
+
+    // Standardize exog using training-window stats only (look-ahead bias prevention)
+    // x_l_std[ci][j] and x_future_l_std[step][j]
+    let (x_l_std, x_future_l_std): (Vec<Vec<f64>>, Vec<Vec<f64>>) = if n_exog > 0 {
+        let mut mu = vec![0.0f64; n_exog];
+        let mut sd = vec![1.0f64; n_exog];
+        for j in 0..n_exog {
+            let train: Vec<f64> = (start..n_complete).map(|ci| x_l_raw[ci][j]).collect();
+            let m = train.iter().sum::<f64>() / train.len() as f64;
+            let s = sqrt(train.iter().map(|&v| pow(v - m, 2.0)).sum::<f64>() / train.len() as f64);
+            mu[j] = m;
+            sd[j] = if s < EPS { 1.0 } else { s };
+        }
+        let xl_std: Vec<Vec<f64>> = x_l_raw.iter().map(|row| {
+            (0..n_exog).map(|j| (row[j] - mu[j]) / sd[j]).collect()
+        }).collect();
+        let xfl_std: Vec<Vec<f64>> = x_future_l_raw.iter().map(|row| {
+            (0..n_exog).map(|j| (row[j] - mu[j]) / sd[j]).collect()
+        }).collect();
+        (xl_std, xfl_std)
+    } else {
+        (vec![], vec![])
+    };
 
     // #6 LSR1: use diff-target when n_train >= 3
     let use_diff = DIFF_TARGET && n_train >= 3;
@@ -710,22 +820,28 @@ fn forecast_inner(
         // y_target = diff(l_innov[start-1..])
         let yt: Vec<f64> = (start..n_complete).map(|ti| l_innov[ti] - l_innov[ti - 1]).collect();
         let xr: Vec<Vec<f64>> = (start..n_complete).map(|ti| {
-            let mut row = vec![0.0f64; nf];
+            let mut row = vec![0.0f64; nf_total];
             row[0] = 1.0;
             row[1] = ti as f64 / n_complete as f64;
             row[nb] = -l_innov[ti - 1]; // sign flip: delta_2 = 1 - beta_2
             if max_cp >= 2 { row[nb + 1] = l_innov[ti - max_cp]; }
+            if n_exog > 0 {
+                for j in 0..n_exog { row[nf + j] = x_l_std[ti][j]; }
+            }
             row
         }).collect();
         (xr, yt)
     } else {
         let yt = l_innov[start..].to_vec();
         let xr: Vec<Vec<f64>> = (start..n_complete).map(|ti| {
-            let mut row = vec![0.0f64; nf];
+            let mut row = vec![0.0f64; nf_total];
             row[0] = 1.0;
             row[1] = ti as f64 / n_complete as f64;
             row[nb] = l_innov[ti - 1];
             if max_cp >= 2 { row[nb + 1] = l_innov[ti - max_cp]; }
+            if n_exog > 0 {
+                for j in 0..n_exog { row[nf + j] = x_l_std[ti][j]; }
+            }
             row
         }).collect();
         (xr, yt)
@@ -744,8 +860,9 @@ fn forecast_inner(
     // #11 LWCP: per-horizon test-point leverage
     let h_test: Vec<f64> = compute_lwcp_leverages(
         &beta, &l_innov, &damped_trend,
+        &x_future_l_std,
         &vt_r, &s_r, &d_avg_r,
-        n_complete, m, nb, nf, max_cp, use_diff,
+        n_complete, m, nb, nf, nf_total, n_exog, max_cp, use_diff,
     );
 
     // ── Stochastic Level paths ──────────────────────────────────────────
@@ -784,12 +901,16 @@ fn forecast_inner(
 
     for j in 0..m {
         let ti = n_complete + j;
+        let exog_contrib: f64 = if n_exog > 0 {
+            let xf = &x_future_l_std[j];
+            (0..n_exog).map(|e| beta[nf + e] * xf[e]).sum()
+        } else { 0.0 };
         for si in 0..n_samples {
             let pred = beta[0]
                 + beta[1] * damped_trend[j]  // #7 damped trend
                 + beta[nb] * l_paths[si][ti - 1];
             let pred = if max_cp >= 2 { pred + beta[nb + 1] * l_paths[si][ti - max_cp] } else { pred };
-            l_paths[si][ti] = pred + noise_pool[si][j];
+            l_paths[si][ti] = pred + exog_contrib + noise_pool[si][j];
         }
     }
 
@@ -927,6 +1048,8 @@ fn forecast_inner(
             }
         }
     }
+
+    let _ = (x_future_mat, x_l_raw, x_future_l_raw); // consumed above, suppress unused warning
 
     // Reuse svd_s from select_period (One SVD principle; same matrix as mat).
     let rank1 = {
@@ -1066,6 +1189,165 @@ mod tests {
         let (samples, conf) = forecast(&y, &freq, 12, 50, 0, None).unwrap();
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
         assert!(conf.rank1.is_some());
+    }
+
+    // ── #19 covariate tests ───────────────────────────────────────────────
+
+    // Covariate with zero variance (constant column) must not panic.
+    #[test]
+    fn covariate_constant_column() {
+        let y: Vec<f64> = (0..60).map(|i| 50.0 + (i as f64).sin()).collect();
+        let n = y.len();
+        let horizon = 6usize;
+        let x_hist = vec![1.0f64; n];
+        let x_future = vec![1.0f64; horizon];
+        let (samples, _) = forecast(&y, &Freq::Monthly, horizon, 20, 0,
+            Some((&x_hist, &x_future))).unwrap();
+        assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+    }
+
+    // Covariate with NaN values must be cleaned and produce finite output.
+    #[test]
+    fn covariate_nan_cleanup() {
+        let y: Vec<f64> = (0..60).map(|i| 50.0 + (i as f64).sin()).collect();
+        let n = y.len();
+        let horizon = 6usize;
+        let mut x_hist: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        x_hist[5] = f64::NAN;
+        let mut x_future: Vec<f64> = (n..n + horizon).map(|i| i as f64).collect();
+        x_future[0] = f64::NAN;
+        let (samples, _) = forecast(&y, &Freq::Monthly, horizon, 20, 0,
+            Some((&x_hist, &x_future))).unwrap();
+        assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+    }
+
+    // Covariates with two columns (k=2).
+    #[test]
+    fn covariate_two_columns() {
+        let y: Vec<f64> = (0..120).map(|i| 100.0 + 10.0 * sin(i as f64 * PI / 6.0)).collect();
+        let n = y.len();
+        let horizon = 12usize;
+        // k=2: flat row-major layout
+        let x_hist: Vec<f64> = (0..n).flat_map(|i| [i as f64, (i as f64).cos()]).collect();
+        let x_future: Vec<f64> = (n..n+horizon).flat_map(|i| [i as f64, (i as f64).cos()]).collect();
+        let (samples, _) = forecast(&y, &Freq::Monthly, horizon, 30, 0,
+            Some((&x_hist, &x_future))).unwrap();
+        assert_eq!(samples[0].len(), horizon);
+        assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+    }
+
+    // Informative exog must shift the point forecast by a non-negligible amount.
+    // Design mirrors Python test_exogenous.py::TestExogEffect::test_informative_exog_changes_forecast:
+    //   y = 100 + 20*x + seasonal + noise, x drives a clear additive level effect.
+    //   After Ridge learns beta[nf] ≈ 20, feeding x_future must visibly move the mean.
+    #[test]
+    fn covariate_informative_shifts_forecast() {
+        let n = 300usize;
+        let horizon = 14usize;
+        // x: slow sinusoid (period=60d) not aligned with weekly period
+        let x_hist: Vec<f64> = (0..n).map(|i| sin(2.0 * PI * i as f64 / 60.0)).collect();
+        let x_future: Vec<f64> = (n..n + horizon).map(|i| sin(2.0 * PI * i as f64 / 60.0)).collect();
+        // y = 100 + 20*x + weekly seasonality + small noise (seed=42 via simple LCG)
+        let mut rng = Rng::new(42);
+        let y: Vec<f64> = (0..n).map(|i| {
+            100.0 + 20.0 * x_hist[i]
+                + 40.0 * sin(2.0 * PI * i as f64 / 7.0)
+                + rng.normal() * 0.5
+        }).collect();
+
+        let (s_no, _) = forecast(&y, &Freq::Daily, horizon, 200, 42, None).unwrap();
+        let (s_ex, _) = forecast(&y, &Freq::Daily, horizon, 200, 42,
+            Some((&x_hist, &x_future))).unwrap();
+
+        let mean_diff: f64 = (0..horizon).map(|h| {
+            let m_no: f64 = s_no.iter().map(|p| p[h]).sum::<f64>() / s_no.len() as f64;
+            let m_ex: f64 = s_ex.iter().map(|p| p[h]).sum::<f64>() / s_ex.len() as f64;
+            (m_no - m_ex).abs()
+        }).sum::<f64>() / horizon as f64;
+
+        assert!(mean_diff > 1.0,
+            "informative exog shift {mean_diff:.4} is negligible — exog may be silently dropped");
+    }
+
+    // Pure noise exog must NOT materially shift the forecast.
+    // Ridge LOOCV soft-average shrinks irrelevant columns; the drift must stay
+    // well under 0.15σ, matching Python test_noise_exog_drift_is_small.
+    #[test]
+    fn covariate_noise_exog_drift_is_small() {
+        let n = 500usize;
+        let horizon = 24usize;
+        let y: Vec<f64> = (0..n).map(|i| 100.0 + 10.0 * sin(2.0 * PI * i as f64 / 24.0)).collect();
+
+        // 3-column pure noise (xorshift seeded deterministically)
+        let mut rng_x = Rng::new(99);
+        let x_hist: Vec<f64> = (0..n * 3).map(|_| rng_x.normal()).collect();
+        let x_future: Vec<f64> = (0..horizon * 3).map(|_| rng_x.normal()).collect();
+
+        let (s_no, _) = forecast(&y, &Freq::Hourly(1), horizon, 200, 42, None).unwrap();
+        let (s_ex, _) = forecast(&y, &Freq::Hourly(1), horizon, 200, 42,
+            Some((&x_hist, &x_future))).unwrap();
+
+        let y_std = {
+            let m = y.iter().sum::<f64>() / n as f64;
+            sqrt(y.iter().map(|&v| pow(v - m, 2.0)).sum::<f64>() / n as f64).max(EPS)
+        };
+        let drift: f64 = (0..horizon).map(|h| {
+            let m_no: f64 = s_no.iter().map(|p| p[h]).sum::<f64>() / s_no.len() as f64;
+            let m_ex: f64 = s_ex.iter().map(|p| p[h]).sum::<f64>() / s_ex.len() as f64;
+            (m_no - m_ex).abs()
+        }).sum::<f64>() / horizon as f64;
+
+        assert!(drift / y_std < 0.15,
+            "noise exog drift {:.4}σ exceeds 0.15σ — Ridge not shrinking noise columns",
+            drift / y_std);
+    }
+
+    // A covariate that is perfectly collinear with y's future should pull the
+    // forecast mean toward the true future value.  We use y_future as x_future
+    // (oracle covariate) and verify the median absolute error is strictly lower.
+    #[test]
+    fn covariate_oracle_reduces_error() {
+        let n = 120usize;
+        let horizon = 12usize;
+        let y: Vec<f64> = (0..n).map(|i| 100.0 + 30.0 * sin(i as f64 * PI * 2.0 / 12.0) + i as f64 * 0.5).collect();
+        let truth: Vec<f64> = (n..n + horizon).map(|i| 100.0 + 30.0 * sin(i as f64 * PI * 2.0 / 12.0) + i as f64 * 0.5).collect();
+
+        // Oracle: x = truth itself (perfect future signal)
+        let x_hist: Vec<f64> = y.clone();
+        let x_future: Vec<f64> = truth.clone();
+
+        let (s_no, _) = forecast(&y, &Freq::Monthly, horizon, 500, 0, None).unwrap();
+        let (s_ex, _) = forecast(&y, &Freq::Monthly, horizon, 500, 0,
+            Some((&x_hist, &x_future))).unwrap();
+
+        let mae = |s: &Vec<Vec<f64>>| -> f64 {
+            (0..horizon).map(|h| {
+                let mean: f64 = s.iter().map(|p| p[h]).sum::<f64>() / s.len() as f64;
+                (mean - truth[h]).abs()
+            }).sum::<f64>() / horizon as f64
+        };
+        let mae_no = mae(&s_no);
+        let mae_ex = mae(&s_ex);
+        assert!(mae_ex < mae_no,
+            "oracle covariate did not reduce MAE: with_exog={mae_ex:.2} >= no_exog={mae_no:.2}");
+    }
+
+    // Validation error: x_hist length not a multiple of y length.
+    #[test]
+    fn covariate_validation_bad_xhist_len() {
+        let y = vec![1.0f64; 10];
+        let x_hist = vec![0.0f64; 7]; // not a multiple of 10
+        let x_future = vec![0.0f64; 5];
+        assert!(forecast(&y, &Freq::Monthly, 5, 10, 0, Some((&x_hist, &x_future))).is_err());
+    }
+
+    // Validation error: x_future length != horizon * k.
+    #[test]
+    fn covariate_validation_bad_xfuture_len() {
+        let y = vec![1.0f64; 10];
+        let x_hist = vec![0.0f64; 10]; // k=1
+        let x_future = vec![0.0f64; 3]; // should be 5
+        assert!(forecast(&y, &Freq::Monthly, 5, 10, 0, Some((&x_hist, &x_future))).is_err());
     }
 
     // ── dataset-iter tests ────────────────────────────────────────────────
