@@ -1446,7 +1446,7 @@ mod tests {
 
         for h in 0..12 {
             let diff = (rs_mean[h] - py_mean[h]).abs();
-            assert!(diff < 15.0,
+            assert!(diff < 2.0,
                 "h={h}: rust={:.1} py={:.1} diff={:.1}", rs_mean[h], py_mean[h], diff);
         }
     }
