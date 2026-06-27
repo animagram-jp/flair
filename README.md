@@ -9,7 +9,7 @@ Wasm-compilable implement of time series forecasting algorithm FLAIR.
 |---------|-----------|-----------|---------------|
 | 0.1.0   | Released  | 2026-04-09 | initial release |
 | 0.2.0   | Released  | 2026-06-26 | follow 0.6.1* |
-| 0.2.1   | Scheduled | 2026-06-28 | fix #25 |
+| 0.2.1   | Released  | 2026-06-27 | fix #25 |
 
 This project adheres to [Semantic Versioning](https://semver.org/).
 
