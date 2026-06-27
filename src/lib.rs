@@ -38,6 +38,7 @@ pub fn seed_from_time() -> u64 {
 // Freq (required as arguments)
 // ============================================================
 
+#[derive(Debug)]
 pub enum Freq {
     Secondly(usize),  // 10
     Minutely(usize),  // 5, 10, 15, 30

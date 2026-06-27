@@ -27,10 +27,15 @@ use crate::{Freq, Confidence, Error, constants::*, svd, optshrink};
 ///
 /// ```rust
 /// use flair::{forecast, Freq};
-/// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
-/// let (paths, conf) = forecast(&y, &Freq::Monthly, 6, 50, 0, None).unwrap();
+/// // Monthly data, 120 points (10 years): trend + seasonality
+/// let y: Vec<f64> = (0..120)
+///     .map(|i| 100.0 + i as f64 * 0.5 + 20.0 * (i as f64 * std::f64::consts::PI / 6.0).sin())
+///     .collect();
+/// let (paths, conf) = forecast(&y, &Freq::Monthly, 12, 50, 0, None).unwrap();
 /// assert_eq!(paths.len(), 50);
-/// assert_eq!(paths[0].len(), 6);
+/// assert_eq!(paths[0].len(), 12);
+/// assert!(paths.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+/// assert!(conf.rank1.is_some()); // monthly period detected
 /// ```
 pub fn forecast(
     y: &[f64],
@@ -75,11 +80,21 @@ pub fn forecast(
 /// # Example
 ///
 /// ```rust
-/// use flair::{forecast_mean, Freq};
-/// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
-/// let (mean_fc, conf) = forecast_mean(&y, &Freq::Monthly, 6, 50, 0, None).unwrap();
-/// assert_eq!(mean_fc.len(), 6);
+/// use flair::{forecast, forecast_mean, Freq};
+/// let y: Vec<f64> = (0..120)
+///     .map(|i| 100.0 + 20.0 * (i as f64 * std::f64::consts::PI / 6.0).sin())
+///     .collect();
+/// let (mean_fc, _) = forecast_mean(&y, &Freq::Monthly, 12, 200, 0, None).unwrap();
+/// assert_eq!(mean_fc.len(), 12);
 /// assert!(mean_fc.iter().all(|v| v.is_finite()));
+/// // forecast_mean equals the sample mean of forecast()
+/// let (paths, _) = forecast(&y, &Freq::Monthly, 12, 200, 0, None).unwrap();
+/// let sample_mean: Vec<f64> = (0..12)
+///     .map(|h| paths.iter().map(|p| p[h]).sum::<f64>() / paths.len() as f64)
+///     .collect();
+/// for h in 0..12 {
+///     assert!((mean_fc[h] - sample_mean[h]).abs() < 1e-10);
+/// }
 /// ```
 pub fn forecast_mean(
     y: &[f64],
@@ -109,10 +124,17 @@ pub fn forecast_mean(
 ///
 /// ```rust
 /// use flair::{forecast_quantiles, Freq};
-/// let y: Vec<f64> = (0..36).map(|i| (i as f64).sin() + 10.0).collect();
-/// let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 6, 100, 0, None, &[0.1, 0.5, 0.9]).unwrap();
+/// let y: Vec<f64> = (0..120)
+///     .map(|i| 100.0 + 20.0 * (i as f64 * std::f64::consts::PI / 6.0).sin())
+///     .collect();
+/// let qs = [0.1, 0.5, 0.9];
+/// let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 200, 0, None, &qs).unwrap();
 /// assert_eq!(bands.len(), 3);
-/// assert!(bands[0][0] <= bands[1][0] && bands[1][0] <= bands[2][0]);
+/// assert!(bands.iter().all(|b| b.len() == 12));
+/// // q0.1 ≤ q0.5 ≤ q0.9 at every horizon step
+/// for h in 0..12 {
+///     assert!(bands[0][h] <= bands[1][h] && bands[1][h] <= bands[2][h]);
+/// }
 /// ```
 pub fn forecast_quantiles(
     y: &[f64],
@@ -1431,6 +1453,179 @@ mod tests {
             assert_eq!(fc.len(), 12, "{}: wrong horizon", ds.file);
             assert!(fc.iter().all(|v| v.is_finite()), "{}: non-finite output", ds.file);
         }
+    }
+
+    // #22: Verify that period/periods for every variant match the design spec.
+    // Hourly(2)/Hourly(12) are Rust-specific granularities (distinct from Python "2H"/"12H")
+    // and are tested against the values defined in issue #22.
+    #[test]
+    fn freq_period_table_all_variants() {
+        let cases: &[(Freq, usize, &[usize])] = &[
+            (Freq::Secondly(10), 6,  &[6]),
+            (Freq::Minutely(5),  12, &[12, 288]),
+            (Freq::Minutely(10), 6,  &[6, 144]),
+            (Freq::Minutely(15), 4,  &[4, 96]),
+            (Freq::Minutely(30), 48, &[48, 336]),
+            (Freq::Hourly(1),    24, &[24, 168]),
+            (Freq::Hourly(2),    12, &[12, 84]),
+            (Freq::Hourly(12),   2,  &[2, 14]),
+            (Freq::Daily,        7,  &[7, 365]),
+            (Freq::Weekly,       52, &[52]),
+            (Freq::Monthly,      12, &[12]),
+            (Freq::Quarterly,    4,  &[4]),
+            (Freq::Yearly,       1,  &[]),
+        ];
+        for (freq, want_p, want_ps) in cases {
+            let got_p = get_period(freq);
+            let got_ps = get_periods(freq);
+            assert_eq!(got_p, *want_p, "period mismatch for {:?}", freq);
+            assert_eq!(&got_ps[..], *want_ps, "periods mismatch for {:?}", freq);
+        }
+    }
+
+    // #14: Unit-test that estimate_shape computes the Frozen Shape correctly.
+    // - s_global sums to ≈ 1 (probability simplex)
+    // - all elements non-negative
+    // - SHAPE_K=2 means only the last 2 periods are used (verified against hand-calculated values)
+    #[test]
+    fn estimate_shape_unit() {
+        // mat[ph][ci]: P=3, n_complete=3
+        // SHAPE_K=2 → only ci=1,2 (last 2 periods) are used
+        let mat: Vec<Vec<f64>> = vec![
+            vec![10.0, 1.0, 4.0],   // ph=0
+            vec![20.0, 2.0, 5.0],   // ph=1
+            vec![30.0, 3.0, 6.0],   // ph=2
+        ];
+        let n_complete = 3usize;
+        let big_p = 3usize;
+        let horizon = 6usize;
+
+        let (s_fc, s_hist, m) = estimate_shape(&mat, n_complete, big_p, &[], &[], horizon);
+
+        assert_eq!(m, 2); // ceil(6/3)
+        assert_eq!(s_fc.len(), m);
+        assert_eq!(s_hist.len(), n_complete);
+
+        // each row sums to 1 and all elements are non-negative
+        for row in &s_fc {
+            let sum: f64 = row.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-10, "s_forecast sum={sum}");
+            assert!(row.iter().all(|&v| v >= 0.0), "negative shape value");
+        }
+        for row in &s_hist {
+            let sum: f64 = row.iter().sum();
+            assert!((sum - 1.0).abs() < 1e-10, "s_hist sum={sum}");
+        }
+
+        // SHAPE_K=2: mean of within-period proportions for ci=1,2
+        // ci=1: totals=6, props=[1/6, 2/6, 3/6]
+        // ci=2: totals=15, props=[4/15, 5/15, 6/15]
+        let p0 = (1.0/6.0 + 4.0/15.0) / 2.0;
+        let p1 = (2.0/6.0 + 5.0/15.0) / 2.0;
+        let p2 = (3.0/6.0 + 6.0/15.0) / 2.0;
+        let psum = p0 + p1 + p2;
+        let want = [p0/psum, p1/psum, p2/psum];
+        for (i, (&got, &exp)) in s_fc[0].iter().zip(want.iter()).enumerate() {
+            assert!((got - exp).abs() < 1e-10,
+                "s_global[{i}]: got={got:.6} want={exp:.6}");
+        }
+
+        // Frozen Shape: every row of s_hist equals s_fc[0] (tiled broadcast)
+        for row in &s_hist {
+            for (g, e) in row.iter().zip(s_fc[0].iter()) {
+                assert!((g - e).abs() < 1e-12, "s_hist != s_global");
+            }
+        }
+    }
+
+    // #21: Regression test for the +inf clip direction.
+    // Run forecast on a monotone-rising series (y_floor << y_hi) and verify that
+    // output does not collapse near y_floor.
+    // The old bug (+inf → y_floor replacement) caused large samples to drop sharply,
+    // detectable when any path value falls below y_floor/2.
+    // Also checks that no value greatly exceeds y_hi + y_range.
+    #[test]
+    fn clip_posinf_regression() {
+        let y: Vec<f64> = (1..=240).map(|i| (i as f64).powi(2)).collect();
+        let y_floor = 1.0f64;
+        let y_hi_approx = 240.0f64.powi(2) as f64;
+        let clip_hi_loose = y_hi_approx * 3.0; // generous upper bound
+
+        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 300, 0, None).unwrap();
+        for path in &samples {
+            for &v in path {
+                assert!(v.is_finite(),
+                    "non-finite leaked to output: {v}");
+                assert!(v >= y_floor * 0.5,
+                    "value {v} < y_floor/2={} — +inf may have been clipped to floor (bug #21)",
+                    y_floor * 0.5);
+                assert!(v <= clip_hi_loose,
+                    "value {v} exceeds loose upper bound {clip_hi_loose}");
+            }
+        }
+    }
+
+    // #20 + #23: Direct verification of the One-SVD principle.
+    // Cross-check svd_s returned by select_period against svdvals recomputed on the same matrix,
+    // confirming they come from a single SVD (no redundant recomputation).
+    // Also verifies that optshrink_factor is in (0, 1].
+    // shrink < 1.0 is not enforced here because it depends on signal strength vs. the
+    // Marchenko-Pastur threshold; a separate rank-1 spike test covers that case.
+    #[test]
+    fn optshrink_uses_select_period_svd_one_svd_principle() {
+        use crate::optshrink::optshrink_factor;
+
+        let y: Vec<f64> = (0..144)
+            .map(|i| 100.0 + 50.0 * sin(i as f64 * PI * 2.0 / 12.0))
+            .collect();
+        let n = y.len();
+        let y_floor = y.iter().cloned().fold(f64::INFINITY, f64::min);
+        let y_shift = (1.0 - y_floor).max(1.0);
+        let y_shifted: Vec<f64> = y.iter().map(|&v| v + y_shift).collect();
+
+        let (big_p, _sec, _period, _cal, svd_s, nc_svd) =
+            select_period(&y_shifted, n, &Freq::Monthly);
+
+        assert_eq!(big_p, 12, "expect P=12 for monthly series");
+        assert!(svd_s.len() >= 2, "svd_s too short");
+        assert!(svd_s[0] >= svd_s[1], "svd_s must be descending");
+
+        // shrink must be in (0, 1]
+        let shrink = optshrink_factor(&svd_s, big_p, nc_svd.max(MIN_COMPLETE));
+        assert!(shrink > 0.0 && shrink <= 1.0,
+            "shrink out of range: {shrink}");
+
+        // One SVD: svd_s from select_period must match svdvals computed directly on mat_c.
+        // Any divergence would indicate a second SVD was run on a different matrix.
+        let nc = n / big_p;
+        let start = y_shifted.len() - nc * big_p;
+        let y_use = &y_shifted[start..];
+        let mat_c: Vec<Vec<f64>> = (0..big_p)
+            .map(|ph| (0..nc).map(|ci| y_use[ci * big_p + ph]).collect())
+            .collect();
+        let svd_s2 = crate::svd::svdvals(&mat_c);
+
+        assert_eq!(svd_s.len(), svd_s2.len(), "svd_s length mismatch");
+        for (i, (&a, &b)) in svd_s.iter().zip(svd_s2.iter()).enumerate() {
+            assert!((a - b).abs() < 1e-8,
+                "svd_s[{i}]: select_period={a:.8} vs recomputed={b:.8} — One SVD principle violated");
+        }
+
+        // Also confirm shrink < 1.0 for data with a strongly dominant rank-1 component
+        // (BBP supercritical check). nc >> P keeps beta small, lowering the threshold.
+        // P=5, nc=50 (beta=0.1) is close to the conditions proven in the optshrink unit tests.
+        let big_p2 = 5usize;
+        let nc2 = 50usize;
+        // rank-1 matrix: mat[ph][ci] = (1 + 0.1*ph) * 100.0 + tiny_noise
+        let mat2: Vec<Vec<f64>> = (0..big_p2)
+            .map(|ph| (0..nc2)
+                .map(|ci| (1.0 + 0.1 * ph as f64) * 100.0 + 0.01 * ((ph * nc2 + ci) % 7) as f64)
+                .collect())
+            .collect();
+        let svd_s_spike = crate::svd::svdvals(&mat2);
+        let shrink2 = optshrink_factor(&svd_s_spike, big_p2, nc2);
+        assert!(shrink2 < 1.0,
+            "rank-1 dominant signal (P={big_p2}, nc={nc2}) must trigger optshrink (shrink={shrink2:.4})");
     }
 
 }

@@ -273,11 +273,16 @@ pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
 ///
 /// ```
 /// use flair::double_exponential;
+/// // ∫₀¹⁰ exp(-x/5) · x^(-1/3) dx
+/// // = 5^(2/3) · Γ(2/3) · γ(2/3, 2) ≈ 3.6798
+/// // where γ is the lower incomplete gamma function.
+/// // Reference value computed via SciPy: scipy.integrate.quad(lambda x: np.exp(-x/5)*x**(-1/3), 0, 10)
 /// let o = double_exponential::integrate(
 ///     |x: f64| (-x / 5.0).exp() * x.powf(-1.0 / 3.0),
 ///     0.0, 10.0, 1e-6,
 /// );
 /// assert!((o.integral - 3.6798142583691758).abs() <= 1e-6);
+/// assert!(o.num_function_evaluations > 0);
 /// ```
 pub fn integrate<F>(f: F, a: f64, b: f64, target_absolute_error: f64) -> Output
     where F: Fn(f64) -> f64
