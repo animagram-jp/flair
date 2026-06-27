@@ -1,6 +1,6 @@
 [package]
 name        = "flair-rs"
-version     = "0.2.0"
+version     = "0.2.1"
 edition     = "2024"
 authors = ["Andyou <andyou@animagram.jp>"]
 description = "Wasm-compilable implement of time series forecasting algorithm FLAIR."
@@ -22,3 +22,6 @@ nalgebra = "0.35"
 [lib]
 name = "flair"
 path = "src/lib.rs"
+
+[package.metadata.docs.rs]
+all-features = true
