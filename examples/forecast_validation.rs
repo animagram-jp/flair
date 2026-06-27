@@ -1,4 +1,4 @@
-use flair::{forecast_mean, Freq};
+use flair::{forecast_mean, Freq, NoiseMode};
 use std::fs;
 
 fn load_col(file: &str, col: usize, skip: usize) -> Option<Vec<f64>> {
@@ -51,7 +51,7 @@ fn test_dataset(name: &str, file: &str, col: usize, skip: usize, frequency: &Fre
     println!("\n=== {} ===", name);
     println!("  total: {} obs, train: {} obs, test: {} obs", y.len(), train.len(), test_actual.len());
 
-    let (fc, conf) = match forecast_mean(train, frequency, horizon.min(test_actual.len()), 100, 42, None) {
+    let (fc, conf) = match forecast_mean(train, frequency, horizon.min(test_actual.len()), 100, 42, None, NoiseMode::Bootstrap) {
         Ok(v) => v,
         Err(e) => { println!("  ERROR: {e:?}"); return; }
     };

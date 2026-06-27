@@ -34,12 +34,6 @@ pub const SHAPE_K: usize = 2;
 /// Number of recent periods used for the phase-noise residual matrix.
 pub const PHASE_NOISE_K: usize = 50;
 
-/// Level noise model: "bootstrap" (empirical LOOCV residual resampling, default) or
-/// "t" (parametric Student-t). Bootstrap is used when the residual pool is large enough
-/// (>= 4); Student-t is the automatic fallback for very short series.
-/// When "t" is chosen, a post-hoc shrinkage toward the median is applied in assembly.
-pub const LEVEL_NOISE_MODE: &str = "bootstrap";
-
 /// Number of alpha candidates in the Ridge LOOCV soft-average grid.
 pub const N_ALPHAS: usize = 25;
 /// log10 of the minimum Ridge alpha.

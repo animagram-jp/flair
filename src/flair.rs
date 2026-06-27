@@ -9,7 +9,7 @@ use core::{
 };
 use alloc::{collections::BTreeSet, vec, vec::Vec};
 use libm::{sqrt, log as ln, exp, pow, sin, cos, round};
-use crate::{Freq, Confidence, Error, constants::*, svd, optshrink};
+use crate::{Freq, Confidence, Error, NoiseMode, constants::*, svd, optshrink};
 
 // ============================================================
 // forecast, forecast_mean, forecast_quantiles
@@ -23,15 +23,17 @@ use crate::{Freq, Confidence, Error, constants::*, svd, optshrink};
 /// `covariates` is currently accepted for API compatibility but not yet used in the model;
 /// pass `None` for standard usage.
 ///
+/// `noise_mode` selects the Level noise model (see [`NoiseMode`]).
+///
 /// # Example
 ///
 /// ```rust
-/// use flair::{forecast, Freq};
+/// use flair::{forecast, Freq, NoiseMode};
 /// // Monthly data, 120 points (10 years): trend + seasonality
 /// let y: Vec<f64> = (0..120)
 ///     .map(|i| 100.0 + i as f64 * 0.5 + 20.0 * (i as f64 * std::f64::consts::PI / 6.0).sin())
 ///     .collect();
-/// let (paths, conf) = forecast(&y, &Freq::Monthly, 12, 50, 0, None).unwrap();
+/// let (paths, conf) = forecast(&y, &Freq::Monthly, 12, 50, 0, None, NoiseMode::Bootstrap).unwrap();
 /// assert_eq!(paths.len(), 50);
 /// assert_eq!(paths[0].len(), 12);
 /// assert!(paths.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
@@ -44,6 +46,7 @@ pub fn forecast(
     n_samples: usize,
     seed: u64,
     covariates: Option<(&[f64], &[f64])>,
+    noise_mode: NoiseMode,
 ) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
     if y.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
     if horizon < 1  { return Err(Error::InvalidInput("horizon must be >= 1")); }
@@ -67,7 +70,7 @@ pub fn forecast(
     } else {
         None
     };
-    forecast_inner(y, horizon, frequency, n_samples, seed, exog)
+    forecast_inner(y, horizon, frequency, n_samples, seed, exog, noise_mode)
 }
 
 /// Returns the mean over all sample paths as a single point forecast.
@@ -77,18 +80,20 @@ pub fn forecast(
 /// `covariates` is currently accepted for API compatibility but not yet used in the model;
 /// pass `None` for standard usage.
 ///
+/// `noise_mode`: see [`NoiseMode`] and [`forecast`] for details.
+///
 /// # Example
 ///
 /// ```rust
-/// use flair::{forecast, forecast_mean, Freq};
+/// use flair::{forecast, forecast_mean, Freq, NoiseMode};
 /// let y: Vec<f64> = (0..120)
 ///     .map(|i| 100.0 + 20.0 * (i as f64 * std::f64::consts::PI / 6.0).sin())
 ///     .collect();
-/// let (mean_fc, _) = forecast_mean(&y, &Freq::Monthly, 12, 200, 0, None).unwrap();
+/// let (mean_fc, _) = forecast_mean(&y, &Freq::Monthly, 12, 200, 0, None, NoiseMode::Bootstrap).unwrap();
 /// assert_eq!(mean_fc.len(), 12);
 /// assert!(mean_fc.iter().all(|v| v.is_finite()));
 /// // forecast_mean equals the sample mean of forecast()
-/// let (paths, _) = forecast(&y, &Freq::Monthly, 12, 200, 0, None).unwrap();
+/// let (paths, _) = forecast(&y, &Freq::Monthly, 12, 200, 0, None, NoiseMode::Bootstrap).unwrap();
 /// let sample_mean: Vec<f64> = (0..12)
 ///     .map(|h| paths.iter().map(|p| p[h]).sum::<f64>() / paths.len() as f64)
 ///     .collect();
@@ -103,8 +108,9 @@ pub fn forecast_mean(
     n_samples: usize,
     seed: u64,
     covariates: Option<(&[f64], &[f64])>,
+    noise_mode: NoiseMode,
 ) -> Result<(Vec<f64>, Confidence), Error> {
-    let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates)?;
+    let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates, noise_mode)?;
     let ns = samples.len() as f64;
     let mean = (0..horizon)
         .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / ns)
@@ -123,12 +129,12 @@ pub fn forecast_mean(
 /// # Example
 ///
 /// ```rust
-/// use flair::{forecast_quantiles, Freq};
+/// use flair::{forecast_quantiles, Freq, NoiseMode};
 /// let y: Vec<f64> = (0..120)
 ///     .map(|i| 100.0 + 20.0 * (i as f64 * std::f64::consts::PI / 6.0).sin())
 ///     .collect();
 /// let qs = [0.1, 0.5, 0.9];
-/// let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 200, 0, None, &qs).unwrap();
+/// let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 200, 0, None, NoiseMode::Bootstrap, &qs).unwrap();
 /// assert_eq!(bands.len(), 3);
 /// assert!(bands.iter().all(|b| b.len() == 12));
 /// // q0.1 ≤ q0.5 ≤ q0.9 at every horizon step
@@ -143,12 +149,13 @@ pub fn forecast_quantiles(
     n_samples: usize,
     seed: u64,
     covariates: Option<(&[f64], &[f64])>,
+    noise_mode: NoiseMode,
     quantiles: &[f64],
 ) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
     if quantiles.is_empty() || quantiles.iter().any(|&q| !(0.0..=1.0).contains(&q)) {
         return Err(Error::InvalidInput("quantiles must be non-empty and each value in [0.0, 1.0]"));
     }
-    let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates)?;
+    let (samples, conf) = forecast(y, frequency, horizon, n_samples, seed, covariates, noise_mode)?;
     let ns = samples.len();
     let result = quantiles.iter().map(|&q| {
         (0..horizon).map(|h| {
@@ -660,6 +667,7 @@ fn forecast_inner(
     n_samples: usize,
     seed: u64,
     exog: Option<(Vec<Vec<f64>>, Vec<Vec<f64>>, usize)>,
+    noise_mode: NoiseMode,
 ) -> Result<(Vec<Vec<f64>>, Confidence), Error> {
     if y_raw.is_empty() { return Err(Error::InvalidInput("y must not be empty")); }
     if horizon < 1     { return Err(Error::InvalidInput("horizon must be >= 1")); }
@@ -891,7 +899,7 @@ fn forecast_inner(
     let loo_len = loo_resid.len();
     let nu = (n_train.saturating_sub(nf)).max(3); // Student-t df, also used for post-hoc shrinkage
     // #12 Empirical bootstrap from LWCP-normalized LOO residuals
-    let noise_pool: Vec<Vec<f64>> = if LEVEL_NOISE_MODE == "bootstrap" && loo_len >= 4 {
+    let noise_pool: Vec<Vec<f64>> = if noise_mode == NoiseMode::Bootstrap && loo_len >= 4 {
         let loo_mean = slice_mean(&loo_resid);
         let loo_std = sqrt(loo_resid.iter().map(|&v| pow(v - loo_mean, 2.0)).sum::<f64>()
             / loo_len as f64).max(EPS);
@@ -1045,7 +1053,7 @@ fn forecast_inner(
     // Post-hoc Student-t shrinkage toward the per-horizon median.
     // Only applied in "t" noise mode with nu < 50; bootstrap samples already
     // have unit variance by construction so no shrinkage is needed there.
-    if LEVEL_NOISE_MODE == "t" && nu < 50 {
+    if noise_mode == NoiseMode::StudentT && nu < 50 {
         let shrink_t = sqrt(((nu as f64 - 2.0).max(0.5)) / nu as f64);
         for h in 0..horizon {
             let mut col: Vec<f64> = samples.iter().map(|p| p[h]).collect();
@@ -1095,7 +1103,7 @@ mod tests {
     #[test]
     fn output_shape() {
         let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
-        let (s, _) = forecast(&y, &Freq::Monthly, 12, 50, 0, None).unwrap();
+        let (s, _) = forecast(&y, &Freq::Monthly, 12, 50, 0, None, NoiseMode::Bootstrap).unwrap();
         assert_eq!(s.len(), 50);
         assert_eq!(s[0].len(), 12);
     }
@@ -1113,16 +1121,16 @@ mod tests {
 
     #[test]
     fn error_cases() {
-        assert!(forecast(&[], &Freq::hourly(1).unwrap(), 5, 10, 0, None).is_err());
-        assert!(forecast(&[1.0, 2.0], &Freq::hourly(1).unwrap(), 0, 10, 0, None).is_err());
-        assert!(forecast(&[1.0, 2.0], &Freq::hourly(1).unwrap(), 5, 0, 0, None).is_err());
+        assert!(forecast(&[], &Freq::hourly(1).unwrap(), 5, 10, 0, None, NoiseMode::Bootstrap).is_err());
+        assert!(forecast(&[1.0, 2.0], &Freq::hourly(1).unwrap(), 0, 10, 0, None, NoiseMode::Bootstrap).is_err());
+        assert!(forecast(&[1.0, 2.0], &Freq::hourly(1).unwrap(), 5, 0, 0, None, NoiseMode::Bootstrap).is_err());
     }
 
     #[test]
     fn forecast_quantiles_shape_and_order() {
         let y: Vec<f64> = (0..200).map(|i| sin(i as f64 * 0.26) * 3.0 + 10.0).collect();
         let qs = [0.1, 0.5, 0.9];
-        let (q, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 100, 0, None, &qs).unwrap();
+        let (q, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 100, 0, None, NoiseMode::Bootstrap, &qs).unwrap();
         assert_eq!(q.len(), 3);
         assert!(q.iter().all(|row| row.len() == 12));
         for h in 0..12 {
@@ -1133,7 +1141,7 @@ mod tests {
     #[test]
     fn forecast_quantiles_invalid_q() {
         let y: Vec<f64> = (0..50).map(|i| i as f64).collect();
-        assert!(forecast_quantiles(&y, &Freq::Monthly, 5, 10, 0, None, &[0.5, 1.5]).is_err());
+        assert!(forecast_quantiles(&y, &Freq::Monthly, 5, 10, 0, None, NoiseMode::Bootstrap, &[0.5, 1.5]).is_err());
     }
 
     // #21: +inf must clip to y_hi+y_range (upper), not y_floor (lower).
@@ -1149,7 +1157,7 @@ mod tests {
         let y_range = (y_hi - y_floor).max(1e-6);
         let clip_hi = y_hi + y_range;
 
-        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 200, 0, None).unwrap();
+        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 200, 0, None, NoiseMode::Bootstrap).unwrap();
         for path in &samples {
             for &v in path {
                 assert!(v.is_finite(), "non-finite in output: {v}");
@@ -1160,15 +1168,15 @@ mod tests {
         }
     }
 
-    // #24: LEVEL_NOISE_MODE constant exists; "bootstrap" default leaves output unchanged.
-    // The "t" shrinkage path is compile-time dead under the default constant,
-    // but we verify the constant is defined and bootstrap output is still finite.
+    // #24: noise_mode argument controls Level noise model.
+    // Bootstrap and StudentT both produce finite output.
     #[test]
-    fn level_noise_mode_bootstrap_default() {
-        assert_eq!(LEVEL_NOISE_MODE, "bootstrap", "default must be bootstrap");
+    fn level_noise_mode_selectable() {
         let y: Vec<f64> = (0..144).map(|i| 100.0 + 20.0 * sin(i as f64 * PI * 2.0 / 12.0)).collect();
-        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 100, 0, None).unwrap();
-        assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+        let (s, _) = forecast(&y, &Freq::Monthly, 12, 100, 0, None, NoiseMode::Bootstrap).unwrap();
+        assert!(s.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+        let (s2, _) = forecast(&y, &Freq::Monthly, 12, 100, 0, None, NoiseMode::StudentT).unwrap();
+        assert!(s2.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
 
     // #22: Hourly(2) = 2H, period=12, periods=[12,84].
@@ -1179,7 +1187,7 @@ mod tests {
         assert_eq!(get_periods(&Freq::Hourly(2)), vec![12, 84]);
         // End-to-end smoke: 2H series with 12-step primary seasonality.
         let y: Vec<f64> = (0..168).map(|i| 50.0 + 10.0 * sin(i as f64 * PI * 2.0 / 12.0)).collect();
-        let (s, _) = forecast(&y, &Freq::Hourly(2), 12, 20, 0, None).unwrap();
+        let (s, _) = forecast(&y, &Freq::Hourly(2), 12, 20, 0, None, NoiseMode::Bootstrap).unwrap();
         assert_eq!(s.len(), 20);
         assert!(s.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
@@ -1208,7 +1216,7 @@ mod tests {
         assert!(nc_svd >= 3, "nc_svd should be >= MIN_COMPLETE");
 
         // End-to-end: output must be finite with the new l_raw/optshrink path.
-        let (samples, conf) = forecast(&y, &freq, 12, 50, 0, None).unwrap();
+        let (samples, conf) = forecast(&y, &freq, 12, 50, 0, None, NoiseMode::Bootstrap).unwrap();
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
         assert!(conf.rank1.is_some());
     }
@@ -1224,7 +1232,7 @@ mod tests {
         let x_hist = vec![1.0f64; n];
         let x_future = vec![1.0f64; horizon];
         let (samples, _) = forecast(&y, &Freq::Monthly, horizon, 20, 0,
-            Some((&x_hist, &x_future))).unwrap();
+            Some((&x_hist, &x_future)), NoiseMode::Bootstrap).unwrap();
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
 
@@ -1239,7 +1247,7 @@ mod tests {
         let mut x_future: Vec<f64> = (n..n + horizon).map(|i| i as f64).collect();
         x_future[0] = f64::NAN;
         let (samples, _) = forecast(&y, &Freq::Monthly, horizon, 20, 0,
-            Some((&x_hist, &x_future))).unwrap();
+            Some((&x_hist, &x_future)), NoiseMode::Bootstrap).unwrap();
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
 
@@ -1253,7 +1261,7 @@ mod tests {
         let x_hist: Vec<f64> = (0..n).flat_map(|i| [i as f64, (i as f64).cos()]).collect();
         let x_future: Vec<f64> = (n..n+horizon).flat_map(|i| [i as f64, (i as f64).cos()]).collect();
         let (samples, _) = forecast(&y, &Freq::Monthly, horizon, 30, 0,
-            Some((&x_hist, &x_future))).unwrap();
+            Some((&x_hist, &x_future)), NoiseMode::Bootstrap).unwrap();
         assert_eq!(samples[0].len(), horizon);
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
@@ -1277,9 +1285,9 @@ mod tests {
                 + rng.normal() * 0.5
         }).collect();
 
-        let (s_no, _) = forecast(&y, &Freq::Daily, horizon, 200, 42, None).unwrap();
+        let (s_no, _) = forecast(&y, &Freq::Daily, horizon, 200, 42, None, NoiseMode::Bootstrap).unwrap();
         let (s_ex, _) = forecast(&y, &Freq::Daily, horizon, 200, 42,
-            Some((&x_hist, &x_future))).unwrap();
+            Some((&x_hist, &x_future)), NoiseMode::Bootstrap).unwrap();
 
         let mean_diff: f64 = (0..horizon).map(|h| {
             let m_no: f64 = s_no.iter().map(|p| p[h]).sum::<f64>() / s_no.len() as f64;
@@ -1305,9 +1313,9 @@ mod tests {
         let x_hist: Vec<f64> = (0..n * 3).map(|_| rng_x.normal()).collect();
         let x_future: Vec<f64> = (0..horizon * 3).map(|_| rng_x.normal()).collect();
 
-        let (s_no, _) = forecast(&y, &Freq::Hourly(1), horizon, 200, 42, None).unwrap();
+        let (s_no, _) = forecast(&y, &Freq::Hourly(1), horizon, 200, 42, None, NoiseMode::Bootstrap).unwrap();
         let (s_ex, _) = forecast(&y, &Freq::Hourly(1), horizon, 200, 42,
-            Some((&x_hist, &x_future))).unwrap();
+            Some((&x_hist, &x_future)), NoiseMode::Bootstrap).unwrap();
 
         let y_std = {
             let m = y.iter().sum::<f64>() / n as f64;
@@ -1338,9 +1346,9 @@ mod tests {
         let x_hist: Vec<f64> = y.clone();
         let x_future: Vec<f64> = truth.clone();
 
-        let (s_no, _) = forecast(&y, &Freq::Monthly, horizon, 500, 0, None).unwrap();
+        let (s_no, _) = forecast(&y, &Freq::Monthly, horizon, 500, 0, None, NoiseMode::Bootstrap).unwrap();
         let (s_ex, _) = forecast(&y, &Freq::Monthly, horizon, 500, 0,
-            Some((&x_hist, &x_future))).unwrap();
+            Some((&x_hist, &x_future)), NoiseMode::Bootstrap).unwrap();
 
         let mae = |s: &Vec<Vec<f64>>| -> f64 {
             (0..horizon).map(|h| {
@@ -1360,7 +1368,7 @@ mod tests {
         let y = vec![1.0f64; 10];
         let x_hist = vec![0.0f64; 7]; // not a multiple of 10
         let x_future = vec![0.0f64; 5];
-        assert!(forecast(&y, &Freq::Monthly, 5, 10, 0, Some((&x_hist, &x_future))).is_err());
+        assert!(forecast(&y, &Freq::Monthly, 5, 10, 0, Some((&x_hist, &x_future)), NoiseMode::Bootstrap).is_err());
     }
 
     // Validation error: x_future length != horizon * k.
@@ -1369,7 +1377,7 @@ mod tests {
         let y = vec![1.0f64; 10];
         let x_hist = vec![0.0f64; 10]; // k=1
         let x_future = vec![0.0f64; 3]; // should be 5
-        assert!(forecast(&y, &Freq::Monthly, 5, 10, 0, Some((&x_hist, &x_future))).is_err());
+        assert!(forecast(&y, &Freq::Monthly, 5, 10, 0, Some((&x_hist, &x_future)), NoiseMode::Bootstrap).is_err());
     }
 
     // ── dataset-iter tests ────────────────────────────────────────────────
@@ -1431,7 +1439,7 @@ mod tests {
         let py_mean = [310.5, 329.0, 343.2, 350.0, 348.1, 338.7,
                        325.0, 311.3, 301.9, 300.0, 306.8, 321.0];
 
-        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 500, 0, None).unwrap();
+        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 500, 0, None, NoiseMode::Bootstrap).unwrap();
         let rs_mean: Vec<f64> = (0..12)
             .map(|h| samples.iter().map(|s| s[h]).sum::<f64>() / samples.len() as f64)
             .collect();
@@ -1448,7 +1456,7 @@ mod tests {
         for ds in datasets() {
             let y = load(&ds);
             assert!(!y.is_empty(), "{}: empty", ds.file);
-            let (fc, _) = forecast_mean(&y, &ds.frequency, 12, 30, 0, None)
+            let (fc, _) = forecast_mean(&y, &ds.frequency, 12, 30, 0, None, NoiseMode::Bootstrap)
                 .unwrap_or_else(|e| panic!("{}: forecast error: {e:?}", ds.file));
             assert_eq!(fc.len(), 12, "{}: wrong horizon", ds.file);
             assert!(fc.iter().all(|v| v.is_finite()), "{}: non-finite output", ds.file);
@@ -1551,7 +1559,7 @@ mod tests {
         let y_hi_approx = 240.0f64.powi(2) as f64;
         let clip_hi_loose = y_hi_approx * 3.0; // generous upper bound
 
-        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 300, 0, None).unwrap();
+        let (samples, _) = forecast(&y, &Freq::Monthly, 12, 300, 0, None, NoiseMode::Bootstrap).unwrap();
         for path in &samples {
             for &v in path {
                 assert!(v.is_finite(),

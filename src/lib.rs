@@ -19,10 +19,43 @@ pub mod optshrink;
 pub mod svd;
 
 pub use flair::{
-    forecast, 
-    forecast_mean, 
+    forecast,
+    forecast_mean,
     forecast_quantiles
 };
+
+// ============================================================
+// NoiseMode
+// ============================================================
+
+/// Level noise sampling model.
+///
+/// Controls how stochastic Level paths are drawn during forecast assembly.
+///
+/// # Variants
+///
+/// - [`Bootstrap`](NoiseMode::Bootstrap) *(default)*: empirical resample of LOOCV residuals
+///   (preserves empirical skew/kurtosis). Automatically falls back to [`StudentT`](NoiseMode::StudentT)
+///   when fewer than 4 LOO residuals are available (very short series).
+/// - [`StudentT`](NoiseMode::StudentT): parametric Student-t with `ν = n_train − p` degrees of
+///   freedom, followed by post-hoc shrinkage toward the per-horizon median when `ν < 50`.
+///
+/// # Example
+///
+/// ```rust
+/// use flair::{forecast, Freq, NoiseMode};
+/// let y: Vec<f64> = (0..120).map(|i| 100.0 + 20.0 * (i as f64 * std::f64::consts::PI / 6.0).sin()).collect();
+/// let (paths, _) = forecast(&y, &Freq::Monthly, 12, 100, 0, None, NoiseMode::Bootstrap).unwrap();
+/// assert!(paths.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoiseMode {
+    /// Empirical bootstrap resampling of LOOCV residuals (default).
+    #[default]
+    Bootstrap,
+    /// Parametric Student-t with post-hoc median shrinkage.
+    StudentT,
+}
 
 /// Returns a non-deterministic seed derived from the system clock.
 /// use like: `let forcast = flair::forecast(&y, 12, "M", 100, flair::seed_from_time());`

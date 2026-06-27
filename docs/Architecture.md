@@ -50,5 +50,5 @@ Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 
 | target | library size (rlib) |
 |--------|---------------------|
-| x86-64 | 716 KB |
-| wasm32 | 471 KB |
+| x86-64 | 783 KB |
+| wasm32 | 513 KB |
