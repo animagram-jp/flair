@@ -133,42 +133,6 @@ P=1のBIC = n × log(Var(y)) + 1 × log(n)
 「ただの平均+ノイズ」モデル（k=1）。これより良いPが見つからなければ周期性なしと判断し、Branch 2（生系列Ridge）に移行します。
 
 ---
-現在のRustコードとの差分
-
-現在のRustはP=1 nullがない：
-
-```rust
-// 現在（0.1.0相当）
-// 候補が1つしかないとき即座にそれを選ぶ
-if candidates.len() == 1 {
-    candidates[0]
-} else {
-    // BICで比較（でもP=1 nullなし）
-}
-
-実装後：
-
-// P=1 null を常に基準として計算
-let rss_null = variance(y_sel) * t_max;
-let bic_null = t_max * ln(rss_null / t_max) + ln(t_max);
-let mut best_bic = bic_null;  // nullが基準
-let mut best_p = 1;
-
-for p_cand in candidates {
-    let bic = ...;
-    if bic < best_bic { best_p = p_cand; best_bic = bic; }
-}
-```
-
-```rust
-fn get_periods(freq: &str) -> Vec<usize> {
-      match resolve_freq(freq).as_str() {
-          "H" => vec![24, 168],  // ← ハードコード // カレンダー周期で決め打ち
-          "D" => vec![7, 365],
-          ...
-      }
-  }
-```
 
 # OptShrink（Gavish-Donoho 2014）
 
@@ -367,49 +331,7 @@ L[t] - L[t-1] = β₀ + β₁×t + (β₂-1)×L[t-1] + ε
 予測ターゲットが L から ΔL（差分）に変わった。Ridgeが縮小するのは δ₂ で、δ₂→0 は β₂→1（ランダムウォーク）に対応します。
 
 ---
-Pythonコードとの対応
 
-# _DIFF_TARGET = True のとき
-y_target = np.diff(L_innov[start-1:])      # ΔL を予測
-X_full[:, nb] = -L_innov[start-1:-1]       # -L[t-1] を特徴量に
-
-# Ridgeが返すのは δ₂、β₂に戻すには：
-beta[nb] = 1.0 - theta[nb]                 # β₂ = 1 - δ₂
-
----
-現在のRustコードとの差分
-
-現在のRustは _DIFF_TARGET が未実装で、L_innov を直接予測しています：
-
-// 現在（0.1.0相当）
-row[nb] = l_innov[ti - 1];   // +L[t-1]
-// y_target = l_innov[start..]  ← Lをそのまま予測
-
-変更後はこうなります：
-
-// LSR1実装後
-row[nb] = -l_innov[ti - 1];  // -L[t-1]（符号反転）
-// y_target = diff(l_innov)   ← ΔLを予測
-// beta[nb] = 1.0 - theta[nb] ← δ₂からβ₂に戻す
-
-変更箇所は少ないですが、予測ループ側は変更不要（beta を復元した後は同じ式を使うので）。
-
----
-まとめ
-
-┌─────────────────────┬──────────┬────────────────────────┐
-│                     │  現Rust  │ LSR1（Python 0.3.0〜） │
-├─────────────────────┼──────────┼────────────────────────┤
-│ 予測ターゲット      │ L[t]     │ ΔL[t]                  │
-├─────────────────────┼──────────┼────────────────────────┤
-│ ラグ特徴量          │ +L[t-1]  │ -L[t-1]                │
-├─────────────────────┼──────────┼────────────────────────┤
-│ Ridgeが縮小するもの │ β₂ → 0   │ δ₂ → 0（つまりβ₂ → 1） │
-├─────────────────────┼──────────┼────────────────────────┤
-│ 事前分布の意味      │ 平均回帰 │ ランダムウォーク       │
-└─────────────────────┴──────────┴────────────────────────┘
-
----
 ダンプトレンド（damped trend）
 
 Level予測の再構成時に、長期的なトレンドが発散しないよう減衰させます：
@@ -491,23 +413,6 @@ loo = loo_raw / sqrt(1 + h_avg)            # LWCP正規化
 「訓練データ点のLeverageによるばらつきを除去した、純粋な予測誤差」にする操作です。これで訓練残差とテスト点のスケールが揃います。
 
 ---
-現在のRustコードとの差分
-
-現在のRustの ridge_sa はLOO残差に / (1-h) だけ適用してLWCP正規化なし：
-
-```
-// 現在（0.1.0相当）
-let loo: Vec<f64> = residuals.iter().zip(h_avg.iter())
-    .map(|(&ri, &hi)| ri / (1.0 - hi).max(EPS))
-    .collect();
-// h_test の計算自体が存在しない
-
-// LWCP実装後
-let loo: Vec<f64> = residuals.iter().zip(h_avg.iter())
-    .map(|(&ri, &hi)| ri / (1.0 - hi).max(EPS) / sqrt(1.0 + hi))
-    .collect();
-// + h_test[j] をホライズンごとに計算する関数が必要
-```
 
 ## 7. フェーズノイズとブートストラップ
 
