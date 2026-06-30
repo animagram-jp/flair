@@ -8,6 +8,7 @@ license     = "Apache-2.0"
 repository  = "https://github.com/animagram-jp/flair"
 keywords    = ["forecasting", "time-series", "wasm", "no-std", "statistics"]
 categories  = ["science", "no-std", "wasm"]
+readme      = ["examples/dataset/"]
 
 [features]
 default = []
