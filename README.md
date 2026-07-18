@@ -1,7 +1,9 @@
 # flair
 
-Wasm-compilable implement of time series forecasting algorithm FLAIR.
+[![Crates.io](https://img.shields.io/crates/v/flair-rs.svg)](https://crates.io/crates/flair-rs)
 
+Wasm-compilable implement of time series forecasting algorithm FLAIR.
+Provides self-estimated forecast confidence with an 800 KB binary.
 
 ## Version
 
@@ -30,8 +32,8 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 ```
 Apache-2.0
 Original: "FLAIR: Factored Level And Interleaved Ridge - single-equation time series forecasting"
-  https://github.com/Mellon-Inc/FLAIR
-  Copyright (c) Takato Honda
+    https://github.com/Mellon-Inc/FLAIR
+    Copyright (c) Takato Honda
 Changes: Reimplemented in Rust; linear algebra from scratch; adapted for WASM deployment
 Author: Andyou <andyou@animagram.jp>
 ```
