@@ -1,0 +1,70 @@
+name: "CI"
+
+on:
+    push:
+        branches: ["main"]
+        tags: ["*.*.*"]
+    pull_request:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: "ci-${{ github.ref }}"
+    cancel-in-progress: true
+
+jobs:
+    validate:
+        if: github.ref_type != 'tag'
+        runs-on: ubuntu-latest
+        steps:
+            - name: "git checkout"
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: "install nightly rustfmt and clippy"
+              run: rustup toolchain install nightly --profile minimal --component rustfmt,clippy
+
+            - name: "cargo fmt"
+              run: cargo +nightly fmt --check
+
+            - name: "cargo clippy"
+              run: cargo +nightly clippy --all-features --all-targets
+
+            - name: "cargo doc"
+              run: cargo doc --all-features --no-deps
+              env:
+                  RUSTDOCFLAGS: "-D warnings"
+
+    test:
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - name: "git checkout"
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: "install llvm-tools"
+              run: rustup component add llvm-tools-preview
+
+            - name: "install cargo-llvm-cov"
+              uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+              with:
+                  tool: "cargo-llvm-cov"
+
+            - name: "cargo test"
+              run: |
+                  cargo test --doc --all-features
+                  cargo llvm-cov --lib --tests --all-features --lcov --output-path lcov.info
+
+            - name: "cargo run (integration_tests)"
+              run: cargo run --example integration_tests
+
+            - name: "upload coverage"
+              uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+              with:
+                  files: "lcov.info"
+                  use_oidc: true
+                  fail_ci_if_error: true
