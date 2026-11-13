@@ -3,26 +3,26 @@
 // Derived from nalgebra v0.35.0 (Copyright 2020 Sébastien Crozet, Apache-2.0).
 // Ported to Vec<f64>-based standalone implementation. See NOTICE for details.
 
-extern crate alloc;
-use alloc::vec;
-use alloc::vec::Vec;
-use libm::{sqrt, fabs, hypot};
+//! Thin SVD — nalgebra-0.35.0 algorithm ported to `Vec<f64>`.
+//!
+//! Origin:
+//! - <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/svd.rs>
+//! - <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/bidiagonal.rs>
+//! - <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/givens.rs>
+//!
+//! nalgebra's type system (`ComplexField`, `DefaultAllocator`, `OMatrix`/`OVector` generics)
+//! pulls in a large dependency tree, so all types are replaced with plain `Vec<f64>`.
+//! The algorithm itself (Householder bidiagonalization → Givens QR iteration) is a
+//! direct port of the nalgebra implementation.
+//!
+//! Public API:
+//! - [`svd`]     : thin SVD → `(U[m×n], s[n], Vt[n×n])`
+//! - [`svdvals`] : singular values only (equivalent to `scipy.linalg.svdvals`)
 
-/// Thin SVD — nalgebra-0.35.0 algorithm ported to `Vec<f64>`.
-///
-/// Origin:
-/// - <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/svd.rs>
-/// - <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/bidiagonal.rs>
-/// - <https://github.com/dimforge/nalgebra/blob/v0.35.0/src/linalg/givens.rs>
-///
-/// nalgebra's type system (`ComplexField`, `DefaultAllocator`, `OMatrix`/`OVector` generics)
-/// pulls in a large dependency tree, so all types are replaced with plain `Vec<f64>`.
-/// The algorithm itself (Householder bidiagonalization → Givens QR iteration) is a
-/// direct port of the nalgebra implementation.
-///
-/// Public API:
-/// - [`svd`]     : thin SVD → `(U[m×n], s[n], Vt[n×n])`
-/// - [`svdvals`] : singular values only (equivalent to `scipy.linalg.svdvals`)
+extern crate alloc;
+use alloc::{vec, vec::Vec};
+
+use libm::{fabs, hypot, sqrt};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Givens rotation
@@ -133,11 +133,11 @@ impl Givens {
 ///
 /// Equivalent to nalgebra `rot.rotate_rows(subm.fixed_columns_mut::<2>(c0))`.
 fn subm_rotate_rows(subm: &mut [[f64; 3]; 2], g: Givens, c0: usize, c1: usize) {
-    for r in 0..2 {
-        let a = subm[r][c0];
-        let b = subm[r][c1];
-        subm[r][c0] = g.c * a + g.s * b;
-        subm[r][c1] = -g.s * a + g.c * b;
+    for row in subm.iter_mut() {
+        let a = row[c0];
+        let b = row[c1];
+        row[c0] = g.c * a + g.s * b;
+        row[c1] = -g.s * a + g.c * b;
     }
 }
 
@@ -217,11 +217,7 @@ fn reflect_cols_with_sign(
     sign: f64,
 ) {
     for j in from_col..ncols {
-        let dot: f64 = axis
-            .iter()
-            .enumerate()
-            .map(|(i, ai)| ai * mat[from_row + i][j])
-            .sum();
+        let dot: f64 = axis.iter().enumerate().map(|(i, ai)| ai * mat[from_row + i][j]).sum();
         let factor = sign * (-2.0) * dot;
         for (i, ai) in axis.iter().enumerate() {
             mat[from_row + i][j] = factor * ai + sign * mat[from_row + i][j];
@@ -243,15 +239,11 @@ fn reflect_rows_with_sign(
     from_col: usize,
     sign: f64,
 ) {
-    for i in from_row..nrows {
-        let dot: f64 = axis
-            .iter()
-            .enumerate()
-            .map(|(j, aj)| aj * mat[i][from_col + j])
-            .sum();
+    for row in &mut mat[from_row..nrows] {
+        let dot: f64 = axis.iter().enumerate().map(|(j, aj)| aj * row[from_col + j]).sum();
         let factor = sign * (-2.0) * dot;
         for (j, aj) in axis.iter().enumerate() {
-            mat[i][from_col + j] = factor * aj + sign * mat[i][from_col + j];
+            row[from_col + j] = factor * aj + sign * row[from_col + j];
         }
     }
 }
@@ -326,8 +318,8 @@ fn assemble_u(
     u_axes: &[(usize, usize, Vec<f64>)],
 ) -> Vec<Vec<f64>> {
     let mut u = vec![vec![0.0f64; n]; m];
-    for i in 0..n {
-        u[i][i] = 1.0;
+    for (i, row) in u.iter_mut().enumerate().take(n) {
+        row[i] = 1.0;
     }
     for &(col, from_row, ref axis) in u_axes.iter().rev() {
         let sign = if diag[col] >= 0.0 { 1.0 } else { -1.0 };
@@ -340,14 +332,10 @@ fn assemble_u(
 ///
 /// Port of nalgebra `Bidiagonal::v_t()`: applies each reflection in reverse order
 /// with `sign = signum(off[i])`.
-fn assemble_vt(
-    n: usize,
-    off: &[f64],
-    vt_axes: &[(usize, usize, Vec<f64>)],
-) -> Vec<Vec<f64>> {
+fn assemble_vt(n: usize, off: &[f64], vt_axes: &[(usize, usize, Vec<f64>)]) -> Vec<Vec<f64>> {
     let mut vt = vec![vec![0.0f64; n]; n];
-    for i in 0..n {
-        vt[i][i] = 1.0;
+    for (i, row) in vt.iter_mut().enumerate() {
+        row[i] = 1.0;
     }
     for &(row, from_col, ref axis) in vt_axes.iter().rev() {
         let sign = if off[row] >= 0.0 { 1.0 } else { -1.0 };
@@ -488,8 +476,8 @@ fn cancel_vertical(
 }
 
 fn delimit_subproblem(
-    diag: &mut Vec<f64>,
-    off: &mut Vec<f64>,
+    diag: &mut [f64],
+    off: &mut [f64],
     u: &mut Option<Vec<Vec<f64>>>,
     vt: &mut Option<Vec<Vec<f64>>>,
     end: usize,
@@ -559,8 +547,8 @@ pub fn svd(a: &[Vec<f64>]) -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f64>>) {
         // svd(A^T) = (U', s, Vt')  →  svd(A) = (Vt'^T, s, U'^T)
         let at = transpose(a, m, n);
         let (u_t, s, vt_t) = svd_impl(&at, true, true);
-        let u = transpose(&vt_t, n, m);   // Vt'^T: m×k
-        let vt = transpose(&u_t, m, n);   // U'^T:  k×n
+        let u = transpose(&vt_t, n, m); // Vt'^T: m×k
+        let vt = transpose(&u_t, m, n); // U'^T:  k×n
         (u, s, vt)
     }
 }
@@ -615,25 +603,17 @@ fn svd_impl(
         .cloned()
         .fold(0.0_f64, |acc: f64, x: f64| if fabs(x) > acc { fabs(x) } else { acc });
     let scale = if amax == 0.0 { 1.0 } else { amax };
-    let a_scaled: Vec<Vec<f64>> = a
-        .iter()
-        .map(|r: &Vec<f64>| r.iter().map(|x| x / scale).collect())
-        .collect();
+    let a_scaled: Vec<Vec<f64>> =
+        a.iter().map(|r: &Vec<f64>| r.iter().map(|x| x / scale).collect()).collect();
 
     // Step 2: Householder bidiagonalization
     let (mut diag, mut off, u_refl, vt_refl) = bidiagonalize(&a_scaled);
 
     // Step 3: assemble U and Vt
-    let mut u_mat: Option<Vec<Vec<f64>>> = if compute_u {
-        Some(assemble_u(m, dim, &diag, &u_refl))
-    } else {
-        None
-    };
-    let mut vt_mat: Option<Vec<Vec<f64>>> = if compute_v {
-        Some(assemble_vt(dim, &off, &vt_refl))
-    } else {
-        None
-    };
+    let mut u_mat: Option<Vec<Vec<f64>>> =
+        if compute_u { Some(assemble_u(m, dim, &diag, &u_refl)) } else { None };
+    let mut vt_mat: Option<Vec<Vec<f64>>> =
+        if compute_v { Some(assemble_vt(dim, &off, &vt_refl)) } else { None };
 
     // Signs are absorbed into U/Vt; take absolute values on the bidiagonal.
     for d in diag.iter_mut() {
@@ -647,9 +627,8 @@ fn svd_impl(
     // Origin: nalgebra/src/linalg/svd.rs `SVD::try_new_unordered` main loop
     let eps = f64::EPSILON * 5.0;
 
-    let (mut start, mut end) = delimit_subproblem(
-        &mut diag, &mut off, &mut u_mat, &mut vt_mat, dim - 1, eps,
-    );
+    let (mut start, mut end) =
+        delimit_subproblem(&mut diag, &mut off, &mut u_mat, &mut vt_mat, dim - 1, eps);
 
     // nalgebra uses max_niter=0 (unlimited); we cap with a large bound as a safety net.
     let max_niter = 100 * dim + 1000;
@@ -680,10 +659,7 @@ fn svd_impl(
                 // Local 2×3 submatrix (nalgebra `Matrix2x3`):
                 //   [[d[k], off[k], 0], [0, d[k+1], m12]]
                 // nalgebra applies rotate_rows / rotate to fixed-column views of this submatrix.
-                let mut subm: [[f64; 3]; 2] = [
-                    [diag[k], off[k], 0.0],
-                    [0.0, diag[k + 1], m12],
-                ];
+                let mut subm: [[f64; 3]; 2] = [[diag[k], off[k], 0.0], [0.0, diag[k + 1], m12]];
 
                 if let Some((rot1, norm1)) = Givens::cancel_y(vx, vy) {
                     // rot1.inverse().rotate_rows(subm.cols(0,1)): right-apply to column pair (0,1)
@@ -724,13 +700,8 @@ fn svd_impl(
             }
         } else if subdim == 2 {
             // Closed-form SVD for the remaining 2×2 block
-            let (u2, s2, v2) = svd_2x2_uptrig(
-                diag[start],
-                off[start],
-                diag[start + 1],
-                compute_u,
-                compute_v,
-            );
+            let (u2, s2, v2) =
+                svd_2x2_uptrig(diag[start], off[start], diag[start + 1], compute_u, compute_v);
             diag[start] = s2[0];
             diag[start + 1] = s2[1];
             off[start] = 0.0;
@@ -744,9 +715,7 @@ fn svd_impl(
             end -= 1;
         }
 
-        let sub = delimit_subproblem(
-            &mut diag, &mut off, &mut u_mat, &mut vt_mat, end, eps,
-        );
+        let sub = delimit_subproblem(&mut diag, &mut off, &mut u_mat, &mut vt_mat, end, eps);
         start = sub.0;
         end = sub.1;
 
@@ -773,9 +742,7 @@ fn svd_impl(
 
     // Step 6: sort descending (nalgebra `sort_by_singular_values`)
     let mut idx: Vec<usize> = (0..dim).collect();
-    idx.sort_unstable_by(|&a, &b| {
-        diag[b].partial_cmp(&diag[a]).unwrap()
-    });
+    idx.sort_unstable_by(|&a, &b| diag[b].partial_cmp(&diag[a]).unwrap());
 
     let sorted_s: Vec<f64> = idx.iter().map(|&i| diag[i]).collect();
 
@@ -797,11 +764,7 @@ fn svd_impl(
         svt
     });
 
-    (
-        sorted_u.unwrap_or_default(),
-        sorted_s,
-        sorted_vt.unwrap_or_default(),
-    )
+    (sorted_u.unwrap_or_default(), sorted_s, sorted_vt.unwrap_or_default())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -867,12 +830,12 @@ mod tests {
 
     fn assert_svd_quality(label: &str, a: &[Vec<f64>], tol_recon: f64, tol_orth: f64) {
         let (u, s, vt) = svd(a);
-        let recon   = reconstruction_error(a, &u, &s, &vt);
-        let orth_u  = orthogonality_error_u(&u);
+        let recon = reconstruction_error(a, &u, &s, &vt);
+        let orth_u = orthogonality_error_u(&u);
         let orth_vt = orthogonality_error_vt(&vt);
-        assert!(recon   < tol_recon, "{label}: reconstruction error {recon:.2e} >= {tol_recon:.2e}");
-        assert!(orth_u  < tol_orth,  "{label}: U orthogonality {orth_u:.2e} >= {tol_orth:.2e}");
-        assert!(orth_vt < tol_orth,  "{label}: Vt orthogonality {orth_vt:.2e} >= {tol_orth:.2e}");
+        assert!(recon < tol_recon, "{label}: reconstruction error {recon:.2e} >= {tol_recon:.2e}");
+        assert!(orth_u < tol_orth, "{label}: U orthogonality {orth_u:.2e} >= {tol_orth:.2e}");
+        assert!(orth_vt < tol_orth, "{label}: Vt orthogonality {orth_vt:.2e} >= {tol_orth:.2e}");
     }
 
     #[test]
@@ -927,26 +890,25 @@ mod tests {
     #[test]
     fn svd_2x2_trailing_block() {
         let cases: &[(&str, Vec<Vec<f64>>)] = &[
-            ("3x3-trailing-2x2",
-             vec![vec![1.0f64, 0.0, 0.0],
-                  vec![0.0,    1.0, 1.0],
-                  vec![0.0,    1.0, -1.0]]),
-            ("3x3-high-cond",
-             vec![vec![1e3f64, 1.0,  0.0],
-                  vec![0.0,    1.0,  1.0],
-                  vec![0.0,    1e-3, 1.0]]),
-            ("3x3-dense",
-             vec![vec![4.0f64, 3.0, 2.0],
-                  vec![3.0,    2.0, 1.0],
-                  vec![1.0,    1.0, 5.0]]),
+            (
+                "3x3-trailing-2x2",
+                vec![vec![1.0f64, 0.0, 0.0], vec![0.0, 1.0, 1.0], vec![0.0, 1.0, -1.0]],
+            ),
+            (
+                "3x3-high-cond",
+                vec![vec![1e3f64, 1.0, 0.0], vec![0.0, 1.0, 1.0], vec![0.0, 1e-3, 1.0]],
+            ),
+            ("3x3-dense", vec![vec![4.0f64, 3.0, 2.0], vec![3.0, 2.0, 1.0], vec![1.0, 1.0, 5.0]]),
         ];
         for (label, a) in cases {
             let s_ref = nalgebra_singvals(a);
             let s = svdvals(a);
             for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
                 let err = if sr > 1e-8 { (sr - sf).abs() / sr } else { (sr - sf).abs() };
-                assert!(err < 1e-6,
-                    "{label} s[{i}]: nalgebra={sr:.6e} flair={sf:.6e} err={err:.2e}");
+                assert!(
+                    err < 1e-6,
+                    "{label} s[{i}]: nalgebra={sr:.6e} flair={sf:.6e} err={err:.2e}"
+                );
             }
             assert_svd_quality(label, a, 1e-11, 1e-11);
         }
@@ -956,15 +918,14 @@ mod tests {
     #[test]
     fn svd_high_condition_number() {
         let scales = [1e6f64, 1e3, 1.0, 1e-3];
-        let a: Vec<Vec<f64>> = (0..4).map(|i|
-            (0..4).map(|j| if i == j { scales[i] } else { 0.0 }).collect()
-        ).collect();
+        let a: Vec<Vec<f64>> = (0..4)
+            .map(|i| (0..4).map(|j| if i == j { scales[i] } else { 0.0 }).collect())
+            .collect();
         let s_ref = nalgebra_singvals(&a);
         let s = svdvals(&a);
         for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
             let rel = (sr - sf).abs() / sr.max(1e-15);
-            assert!(rel < 1e-6,
-                "high-cond s[{i}]: nalgebra={sr:.6e} flair={sf:.6e} rel={rel:.2e}");
+            assert!(rel < 1e-6, "high-cond s[{i}]: nalgebra={sr:.6e} flair={sf:.6e} rel={rel:.2e}");
         }
         assert_svd_quality("high-cond", &a, 1e-11, 1e-11);
     }
@@ -974,14 +935,16 @@ mod tests {
     fn svd_rank1_matrix() {
         let u_vec = [1.0f64, 2.0, 3.0];
         let v_vec = [4.0f64, 5.0, 6.0];
-        let a: Vec<Vec<f64>> = (0..3).map(|i|
-            (0..3).map(|j| u_vec[i] * v_vec[j]).collect()
-        ).collect();
+        let a: Vec<Vec<f64>> =
+            (0..3).map(|i| (0..3).map(|j| u_vec[i] * v_vec[j]).collect()).collect();
         let s = svdvals(&a);
         let expected_s0 = (u_vec.iter().map(|&v| v * v).sum::<f64>()).sqrt()
-                        * (v_vec.iter().map(|&v| v * v).sum::<f64>()).sqrt();
-        assert!((s[0] - expected_s0).abs() / expected_s0 < 1e-8,
-            "rank-1 s[0]: expected {expected_s0:.6} got {:.6}", s[0]);
+            * (v_vec.iter().map(|&v| v * v).sum::<f64>()).sqrt();
+        assert!(
+            (s[0] - expected_s0).abs() / expected_s0 < 1e-8,
+            "rank-1 s[0]: expected {expected_s0:.6} got {:.6}",
+            s[0]
+        );
         assert!(s[1] < 1e-8, "rank-1 s[1] should be ~0, got {}", s[1]);
         assert!(s[2] < 1e-8, "rank-1 s[2] should be ~0, got {}", s[2]);
         assert_svd_quality("rank-1", &a, 1e-10, 1e-10);
@@ -997,8 +960,12 @@ mod tests {
         let rel0 = (s_ref[0] - s[0]).abs() / s_ref[0];
         assert!(rel0 < 1e-8, "near-singular s[0] rel={rel0:.2e}");
         let abs1 = (s_ref[1] - s[1]).abs();
-        assert!(abs1 < 1e-10,
-            "near-singular s[1] abs={abs1:.2e} (ref={:.4e} got={:.4e})", s_ref[1], s[1]);
+        assert!(
+            abs1 < 1e-10,
+            "near-singular s[1] abs={abs1:.2e} (ref={:.4e} got={:.4e})",
+            s_ref[1],
+            s[1]
+        );
     }
 
     /// Rank-1 dominant 12×10 matrix (optshrink scenario).
@@ -1007,11 +974,11 @@ mod tests {
         let p = 12usize;
         let nc = 10usize;
         let mut a: Vec<Vec<f64>> = vec![vec![0.0; nc]; p];
-        for ph in 0..p {
-            for ci in 0..nc {
+        for (ph, row) in a.iter_mut().enumerate() {
+            for (ci, v) in row.iter_mut().enumerate() {
                 let signal = (1.0 + 0.1 * ph as f64) * (10.0 + ci as f64);
-                let noise  = 0.3 * ((ph * nc + ci) as f64 * 1.7321 % 1.0 - 0.5);
-                a[ph][ci] = signal + noise;
+                let noise = 0.3 * ((ph * nc + ci) as f64 * 1.7321 % 1.0 - 0.5);
+                *v = signal + noise;
             }
         }
         let s_ref = nalgebra_singvals(&a);
@@ -1020,8 +987,10 @@ mod tests {
         assert!(rel0 < 1e-4, "period-matrix s[0] rel={rel0:.2e}");
         for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
             let rel = (sr - sf).abs() / sr.max(1e-6);
-            assert!(rel < 0.10,
-                "period-matrix s[{i}]: nalgebra={sr:.4} flair={sf:.4} rel={rel:.4}");
+            assert!(
+                rel < 0.10,
+                "period-matrix s[{i}]: nalgebra={sr:.4} flair={sf:.4} rel={rel:.4}"
+            );
         }
         assert_svd_quality("period-matrix", &a, 1e-8, 1e-8);
     }
@@ -1029,16 +998,17 @@ mod tests {
     /// Tall matrix 50×3 (ridge_sa scenario).
     #[test]
     fn svd_tall_ridge_design() {
-        let a: Vec<Vec<f64>> = (0..50).map(|i| {
-            let t = i as f64 / 50.0;
-            vec![1.0, t, (t * 6.28318).sin()]
-        }).collect();
+        let a: Vec<Vec<f64>> = (0..50)
+            .map(|i| {
+                let t = i as f64 / 50.0;
+                vec![1.0, t, (t * core::f64::consts::TAU).sin()]
+            })
+            .collect();
         let s_ref = nalgebra_singvals(&a);
         let s = svdvals(&a);
         for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
             let rel = (sr - sf).abs() / sr.max(1e-10);
-            assert!(rel < 1e-6,
-                "tall-ridge s[{i}]: nalgebra={sr:.6} flair={sf:.6} rel={rel:.2e}");
+            assert!(rel < 1e-6, "tall-ridge s[{i}]: nalgebra={sr:.6} flair={sf:.6} rel={rel:.2e}");
         }
         assert_svd_quality("tall-ridge", &a, 1e-10, 1e-10);
     }
@@ -1047,22 +1017,36 @@ mod tests {
     #[test]
     fn svd_full_reconstruction_vs_nalgebra() {
         let cases: &[(&str, Vec<Vec<f64>>)] = &[
-            ("3x2", vec![vec![1.0f64,2.0],vec![3.0,4.0],vec![5.0,6.0]]),
-            ("4x3", vec![vec![1.0f64,2.0,3.0],vec![4.0,5.0,6.0],
-                         vec![7.0,8.0,9.0],vec![10.0,11.0,12.0]]),
-            ("5x5-rand", vec![vec![2.0f64,1.0,0.5,0.25,0.1],
-                              vec![1.0,3.0,1.0,0.5, 0.2],
-                              vec![0.5,1.0,4.0,1.0, 0.3],
-                              vec![0.25,0.5,1.0,5.0,0.4],
-                              vec![0.1,0.2,0.3,0.4,6.0]]),
+            ("3x2", vec![vec![1.0f64, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]]),
+            (
+                "4x3",
+                vec![
+                    vec![1.0f64, 2.0, 3.0],
+                    vec![4.0, 5.0, 6.0],
+                    vec![7.0, 8.0, 9.0],
+                    vec![10.0, 11.0, 12.0],
+                ],
+            ),
+            (
+                "5x5-rand",
+                vec![
+                    vec![2.0f64, 1.0, 0.5, 0.25, 0.1],
+                    vec![1.0, 3.0, 1.0, 0.5, 0.2],
+                    vec![0.5, 1.0, 4.0, 1.0, 0.3],
+                    vec![0.25, 0.5, 1.0, 5.0, 0.4],
+                    vec![0.1, 0.2, 0.3, 0.4, 6.0],
+                ],
+            ),
         ];
         for (label, a) in cases {
             let s_ref = nalgebra_singvals(a);
             let s = svdvals(a);
             for (i, (&sr, &sf)) in s_ref.iter().zip(s.iter()).enumerate() {
                 let rel = (sr - sf).abs() / sr.max(1e-12);
-                assert!(rel < 1e-8,
-                    "{label} s[{i}]: nalgebra={sr:.8e} flair={sf:.8e} rel={rel:.2e}");
+                assert!(
+                    rel < 1e-8,
+                    "{label} s[{i}]: nalgebra={sr:.8e} flair={sf:.8e} rel={rel:.2e}"
+                );
             }
             assert_svd_quality(label, a, 1e-10, 1e-10);
         }

@@ -60,23 +60,30 @@
 
 // --- constant ---
 
-pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
-[&[// First layer weights
-    (0.230022394514788685, 0.95136796407274694573),
-    (0.00026620051375271690866, 0.99997747719246159286),
-    (1.3581784274539090834e-12, 0.99999999999995705839)],
-    &[// 2nd layer weights and abcissas: transformed 1/2, 3/2, 5/2
+pub const WEIGHTS: [&[(f64, f64)]; 7] = [
+    &[
+        // First layer weights
+        (0.230022394514788685, 0.95136796407274694573),
+        (0.00026620051375271690866, 0.99997747719246159286),
+        (1.3581784274539090834e-12, 0.99999999999995705839),
+    ],
+    &[
+        // 2nd layer weights and abcissas: transformed 1/2, 3/2, 5/2
         (0.5 * 0.96597657941230114801, 0.67427149224843582608),
         (0.5 * 0.018343166989927842087, 0.99751485645722438683),
-        (0.5 * 2.1431204556943039358e-7, 0.99999998887566488198)],
-    &[// 3rd layer weights and abcissas: transformed 1/4, 3/4, ...
+        (0.5 * 2.1431204556943039358e-7, 0.99999998887566488198),
+    ],
+    &[
+        // 3rd layer weights and abcissas: transformed 1/4, 3/4, ...
         (0.25 * 1.3896147592472563229, 0.37720973816403417379),
         (0.25 * 0.53107827542805397476, 0.85956905868989663517),
         (0.25 * 0.076385743570832304188, 0.98704056050737689169),
         (0.25 * 0.0029025177479013135936, 0.99968826402835320905),
         (0.25 * 0.000011983701363170720047, 0.99999920473711471266),
-        (0.25 * 1.1631165814255782766e-9, 0.99999999995285644818)],
-    &[// 4th layer weights and abcissas: transformed 1/8, 3/8, ...
+        (0.25 * 1.1631165814255782766e-9, 0.99999999995285644818),
+    ],
+    &[
+        // 4th layer weights and abcissas: transformed 1/8, 3/8, ...
         (0.125 * 1.5232837186347052132, 0.19435700332493543161),
         (0.125 * 1.1934630258491569639, 0.53914670538796776905),
         (0.125 * 0.73743784836154784136, 0.78060743898320029925),
@@ -88,8 +95,10 @@ pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
         (0.125 * 0.000062482559240744082891, 0.99999531604122052843),
         (0.125 * 1.8263320593710659699e-6, 0.99999989278161241838),
         (0.125 * 1.8687282268736410132e-8, 0.99999999914270509218),
-        (0.125 * 4.9378538776631926964e-11, 0.99999999999823216531)],
-    &[//  5th layer weights and abcissa: transformed 1/16, 3/16, ...
+        (0.125 * 4.9378538776631926964e-11, 0.99999999999823216531),
+    ],
+    &[
+        //  5th layer weights and abcissa: transformed 1/16, 3/16, ...
         (0.0625 * 1.5587733555333301451, 0.097923885287832333262),
         (0.0625 * 1.466014426716965781, 0.28787993274271591456),
         (0.0625 * 1.297475750424977998, 0.46125354393958570440),
@@ -113,8 +122,10 @@ pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
         (0.0625 * 6.5835185127183396672e-8, 0.99999999678719909830),
         (0.0625 * 4.8760060974240625869e-9, 0.99999999978973286224),
         (0.0625 * 2.5216347918530148572e-10, 0.99999999999039393352),
-        (0.0625 * 8.6759314149796046502e-12, 0.99999999999970809734)],
-    &[// 6th layer weights and abcissas: transformed 1/32, 3/32, ...
+        (0.0625 * 8.6759314149796046502e-12, 0.99999999999970809734),
+    ],
+    &[
+        // 6th layer weights and abcissas: transformed 1/32, 3/32, ...
         (0.03125 * 1.5677814313072218572, 0.049055967305077886315),
         (0.03125 * 1.5438811161769592204, 0.14641798429058794053),
         (0.03125 * 1.4972262225410362896, 0.24156631953888365838),
@@ -162,8 +173,10 @@ pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
         (0.03125 * 5.482835779709497755e-10, 0.99999999997845533741),
         (0.03125 * 1.1306055347494680536e-10, 0.99999999999582460688),
         (0.03125 * 2.0989335404511469109e-11, 0.99999999999927152627),
-        (0.03125 * 3.4841937670261059685e-12, 0.99999999999988636130)],
-    &[// 7th layer weights and abcissas: transformed 1/64, 3/64, ...
+        (0.03125 * 3.4841937670261059685e-12, 0.99999999999988636130),
+    ],
+    &[
+        // 7th layer weights and abcissas: transformed 1/64, 3/64, ...
         (0.015625 * 1.5700420292795931467, 0.024539763574649160379),
         (0.015625 * 1.5640214037732320999, 0.073525122985671294475),
         (0.015625 * 1.5520531698454121192, 0.12222912220155764235),
@@ -259,7 +272,9 @@ pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
         (0.015625 * 3.230446433325236576e-11, 0.99999999999886126543),
         (0.015625 * 1.3542512912336274432e-11, 0.99999999999953722654),
         (0.015625 * 5.5182369468174885821e-12, 0.99999999999981720098),
-        (0.015625 * 2.1835922099233609052e-12, 0.99999999999992987953)]]; // end weights
+        (0.015625 * 2.1835922099233609052e-12, 0.99999999999992987953),
+    ],
+]; // end weights
 
 // --- Double Exponential ---
 
@@ -285,35 +300,38 @@ pub const WEIGHTS: [&'static [(f64, f64)]; 7] =
 /// assert!(o.num_function_evaluations > 0);
 /// ```
 pub fn integrate<F>(f: F, a: f64, b: f64, target_absolute_error: f64) -> Output
-    where F: Fn(f64) -> f64
+where
+    F: Fn(f64) -> f64,
 {
     // Apply the linear change of variables x = ct + d
     // $$\int_a^b f(x) dx = c \int_{-1}^1 f( ct + d ) dt$$
     // c = (b-a)/2, d = (a+b)/2
     let c = 0.5 * (b - a);
     let d = 0.5 * (a + b);
-    integrate_core(|x| {
-        let out = f(c * x + d);
-        if out.is_finite() { out } else { 0.0 }
-    },
-                   0.25 * target_absolute_error / c)
-        .scale(c)
+    integrate_core(
+        |x| {
+            let out = f(c * x + d);
+            if out.is_finite() { out } else { 0.0 }
+        },
+        0.25 * target_absolute_error / c,
+    )
+    .scale(c)
 }
 
 /// Integrate f(x) from [-1.0, 1.0]
 fn integrate_core<F>(f: F, target_absolute_error: f64) -> Output
-    where F: Fn(f64) -> f64
+where
+    F: Fn(f64) -> f64,
 {
-    let mut error_estimate = ::core::f64::MAX;
+    let mut error_estimate = f64::MAX;
     let mut num_function_evaluations = 1;
-    let mut current_delta = ::core::f64::MAX;
+    let mut current_delta = f64::MAX;
 
     let mut integral = 2.0 * ::core::f64::consts::FRAC_PI_2 * f(0.0);
 
     for &weight in &WEIGHTS {
-        let new_contribution = weight.iter()
-            .map(|&(w, x)| w * (f(x) + f(-x)))
-            .fold(0.0, |sum, x| sum + x);
+        let new_contribution =
+            weight.iter().map(|&(w, x)| w * (f(x) + f(-x))).fold(0.0, |sum, x| sum + x);
         num_function_evaluations += 2 * weight.len();
 
         // difference in consecutive integral estimates
@@ -355,11 +373,7 @@ fn integrate_core<F>(f: F, target_absolute_error: f64) -> Output
         }
     }
 
-    Output {
-        num_function_evaluations: num_function_evaluations as u32,
-        error_estimate: error_estimate,
-        integral: integral,
-    }
+    Output { num_function_evaluations: num_function_evaluations as u32, error_estimate, integral }
 }
 
 // --- Result ----
@@ -367,16 +381,16 @@ fn integrate_core<F>(f: F, target_absolute_error: f64) -> Output
 #[derive(Clone, Copy, Debug)]
 pub struct Output {
     pub num_function_evaluations: u32,
-    pub error_estimate: f64,
-    pub integral: f64,
+    pub error_estimate:           f64,
+    pub integral:                 f64,
 }
 
 impl Output {
     fn scale(self, c: f64) -> Self {
         Output {
             num_function_evaluations: self.num_function_evaluations,
-            error_estimate: c * self.error_estimate,
-            integral: c * self.integral,
+            error_estimate:           c * self.error_estimate,
+            integral:                 c * self.integral,
         }
     }
 }
@@ -384,50 +398,59 @@ impl Output {
 // --- test ---
 
 #[cfg(test)]
-#[allow(unused_macros)]
 mod tests {
     use super::*;
     extern crate std;
 
     macro_rules! unit_test {
-    ($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr; $max:expr) => (
-        #[test]
-        fn $name() {
-            let o = integrate($inta, $lim.start, $lim.end, $eps);
-            assert!(o.num_function_evaluations == $max,
+        ($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr; $max:expr) => {
+            #[test]
+            fn $name() {
+                let o = integrate($inta, $lim.start, $lim.end, $eps);
+                assert!(
+                    o.num_function_evaluations == $max,
                     "num_function_evaluations is not maxed out. evaluations: {:#?}, max: {:#?}",
                     o.num_function_evaluations,
-                    $max);
-            assert!((o.integral - $out).abs() <= o.error_estimate,
+                    $max
+                );
+                assert!(
+                    (o.integral - $out).abs() <= o.error_estimate,
                     "error larger then error_estimate. error: {:#?}, estimate: {:#?}",
                     (o.integral - $out).abs(),
-                    o.error_estimate);
-        }
-    );
-    ($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr) => (
-        #[test]
-        fn $name() {
-            let o = integrate($inta, $lim.start, $lim.end, $eps);
-            assert!(o.error_estimate <= $eps,
+                    o.error_estimate
+                );
+            }
+        };
+        ($name:ident = $inta:expr ; $lim:expr; $eps:expr => $out:expr) => {
+            #[test]
+            fn $name() {
+                let o = integrate($inta, $lim.start, $lim.end, $eps);
+                assert!(
+                    o.error_estimate <= $eps,
                     "error_estimate larger then asked. estimate: {:#?}, asked: {:#?}",
                     o.error_estimate,
-                    $eps);
-            assert!((o.integral - $out).abs() <= $eps,
+                    $eps
+                );
+                assert!(
+                    (o.integral - $out).abs() <= $eps,
                     "error larger then asked. error: {:#?}, estimate: {:#?}",
                     (o.integral - $out).abs(),
-                    $eps);
-        }
-    );
-    ($name:ident = $inta:expr ; $lim:expr; $eps:expr) => (
-        #[test]
-        fn $name() {
-            let o = integrate($inta, $lim.start, $lim.end, $eps);
-            assert!(o.error_estimate <= $eps,
+                    $eps
+                );
+            }
+        };
+        ($name:ident = $inta:expr ; $lim:expr; $eps:expr) => {
+            #[test]
+            fn $name() {
+                let o = integrate($inta, $lim.start, $lim.end, $eps);
+                assert!(
+                    o.error_estimate <= $eps,
                     "error_estimate larger then asked. estimate: {:#?}, asked: {:#?}",
                     o.error_estimate,
-                    $eps);
-        }
-    )
+                    $eps
+                );
+            }
+        };
     }
 
     unit_test!(trivial_function_works = |_| 0.5; -1.0..1.0; 1e-14);
@@ -437,6 +460,6 @@ mod tests {
     unit_test!(demo_bad_function1_works = |x: f64| (1.0 - x).powf(0.99); 0.0..1.0; 1e-6 => 0.50251256281407035);
     unit_test!(demo_bad_function2_works = |x: f64| x.abs(); -1.0..1.0; 1e-6 => 1.0; 385);
     unit_test!(demo_bad_function3_works = |x: f64| (0.5 - x.abs()).abs(); -1.0..1.0; 1e-6 => 0.5; 385);
-    unit_test!(demo_circle = |x: f64| ((1.0 - x.powi(2)).sqrt()).abs(); -1.0..1.0; 1e-6 => 1.5707963267949);
+    unit_test!(demo_circle = |x: f64| ((1.0 - x.powi(2)).sqrt()).abs(); -1.0..1.0; 1e-6 => core::f64::consts::FRAC_PI_2);
     unit_test!(demo_bad_circle = |x: f64| ((1.0 - x.powi(2)).sqrt() - 0.7).abs(); -1.0..1.0; 1e-4 => 0.420201353577392);
 }

@@ -11,7 +11,8 @@
 //! The Marchenko-Pastur median `mu_beta` is computed via numerical integration
 //! over the MP support using `double_exponential::integrate` and a Brent solver.
 
-use libm::{sqrt, pow, fabs};
+use libm::{fabs, pow, sqrt};
+
 use crate::{
     constants::{EPS, EPS_BOXCOX},
     double_exponential::integrate,
@@ -31,11 +32,15 @@ pub fn mp_median(beta: f64) -> f64 {
     let b = beta.min(1.0);
     let sb = sqrt(b);
     let y_minus = (1.0 - sb) * (1.0 - sb);
-    let y_plus  = (1.0 + sb) * (1.0 + sb);
+    let y_plus = (1.0 + sb) * (1.0 + sb);
 
     let mp_cdf = |m: f64| -> f64 {
-        if m <= y_minus { return 0.0; }
-        if m >= y_plus  { return 1.0; }
+        if m <= y_minus {
+            return 0.0;
+        }
+        if m >= y_plus {
+            return 1.0;
+        }
         let result = integrate(
             |x| {
                 let num = (y_plus - x) * (x - y_minus);
@@ -49,8 +54,7 @@ pub fn mp_median(beta: f64) -> f64 {
         (result.integral / (2.0 * core::f64::consts::PI)).clamp(0.0, 1.0)
     };
 
-    brent_solve(mp_cdf, y_minus + EPS, y_plus - EPS, 1e-10)
-        .unwrap_or((y_minus + y_plus) * 0.5)
+    brent_solve(mp_cdf, y_minus + EPS, y_plus - EPS, 1e-10).unwrap_or((y_minus + y_plus) * 0.5)
 }
 
 /// Brent root-finding: solves f(x) = 0.5 given f(xa)*f(xb) < 0.
@@ -61,17 +65,33 @@ fn brent_solve<F: Fn(f64) -> f64>(f: F, xa: f64, xb: f64, xtol: f64) -> Option<f
     let mut b = xb;
     let mut fa = g(a);
     let mut fb = g(b);
-    if fa * fb > 0.0 { return None; }
+    if fa * fb > 0.0 {
+        return None;
+    }
     let mut c = a;
     let mut fc = fa;
     let mut d = b - a;
     let mut e = d;
     for _ in 0..500 {
-        if fb * fc > 0.0 { c = a; fc = fa; d = b - a; e = d; }
-        if fabs(fc) < fabs(fb) { a = b; b = c; c = a; fa = fb; fb = fc; fc = fa; }
+        if fb * fc > 0.0 {
+            c = a;
+            fc = fa;
+            d = b - a;
+            e = d;
+        }
+        if fabs(fc) < fabs(fb) {
+            a = b;
+            b = c;
+            c = a;
+            fa = fb;
+            fb = fc;
+            fc = fa;
+        }
         let tol = 2.0 * f64::EPSILON * fabs(b) + 0.5 * xtol;
         let m = 0.5 * (c - b);
-        if fabs(m) <= tol || fb == 0.0 { return Some(b); }
+        if fabs(m) <= tol || fb == 0.0 {
+            return Some(b);
+        }
         if fabs(e) >= tol && fabs(fa) > fabs(fb) {
             let s = fb / fa;
             let (p, q) = if a == c {
@@ -79,20 +99,32 @@ fn brent_solve<F: Fn(f64) -> f64>(f: F, xa: f64, xb: f64, xtol: f64) -> Option<f
             } else {
                 let q = fa / fc;
                 let r = fb / fc;
-                (s * (2.0 * m * q * (q - r) - (b - a) * (r - 1.0)),
-                 (q - 1.0) * (r - 1.0) * (s - 1.0))
+                (
+                    s * (2.0 * m * q * (q - r) - (b - a) * (r - 1.0)),
+                    (q - 1.0) * (r - 1.0) * (s - 1.0),
+                )
             };
             let (p, q) = if p > 0.0 { (p, -q) } else { (-p, q) };
             if 2.0 * p < (3.0 * m * q - fabs(tol * q)).min(fabs(e * q)) {
-                e = d; d = p / q;
+                e = d;
+                d = p / q;
             } else {
-                d = m; e = m;
+                d = m;
+                e = m;
             }
         } else {
-            d = m; e = m;
+            d = m;
+            e = m;
         }
-        a = b; fa = fb;
-        b += if fabs(d) > tol { d } else if m > 0.0 { tol } else { -tol };
+        a = b;
+        fa = fb;
+        b += if fabs(d) > tol {
+            d
+        } else if m > 0.0 {
+            tol
+        } else {
+            -tol
+        };
         fb = g(b);
     }
     Some(b)
@@ -149,10 +181,9 @@ pub fn optshrink_factor(svd_s: &[f64], big_p: usize, nc: usize) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    extern crate std;
     extern crate alloc;
-    use alloc::vec;
-    use alloc::vec::Vec;
+    extern crate std;
+    use alloc::{vec, vec::Vec};
 
     /// Reference values pre-computed via Python flaircast 0.6.1 `_mp_median`.
     #[test]
@@ -160,10 +191,10 @@ mod tests {
         // (beta, expected_mu, tol)
         let cases = [
             (0.01_f64, 0.99667, 5e-3),
-            (0.1,      0.96657, 5e-3),
-            (0.25,     0.91600, 5e-3),
-            (0.5,      0.83047, 5e-3),
-            (1.0,      0.65278, 5e-3),
+            (0.1, 0.96657, 5e-3),
+            (0.25, 0.91600, 5e-3),
+            (0.5, 0.83047, 5e-3),
+            (1.0, 0.65278, 5e-3),
         ];
         for (beta, expected, tol) in cases {
             let got = mp_median(beta);
@@ -181,9 +212,11 @@ mod tests {
             let beta = i as f64 * 0.05;
             let mu = mp_median(beta);
             let y_minus = pow(1.0 - sqrt(beta.min(1.0)), 2.0);
-            let y_plus  = pow(1.0 + sqrt(beta.min(1.0)), 2.0);
-            assert!(mu > y_minus && mu < y_plus,
-                "beta={beta}: mu={mu} not in ({y_minus}, {y_plus})");
+            let y_plus = pow(1.0 + sqrt(beta.min(1.0)), 2.0);
+            assert!(
+                mu > y_minus && mu < y_plus,
+                "beta={beta}: mu={mu} not in ({y_minus}, {y_plus})"
+            );
         }
     }
 
@@ -191,9 +224,9 @@ mod tests {
     #[test]
     fn optshrink_degenerate() {
         assert_eq!(optshrink_factor(&[], 10, 10), 1.0);
-        assert_eq!(optshrink_factor(&[5.0], 10, 10), 1.0);   // len < 2
+        assert_eq!(optshrink_factor(&[5.0], 10, 10), 1.0); // len < 2
         assert_eq!(optshrink_factor(&[5.0, 1.0], 1, 10), 1.0); // min(P,nc) < 2
-        assert_eq!(optshrink_factor(&[0.0, 0.0], 5, 5), 1.0);  // sigma_1 = 0
+        assert_eq!(optshrink_factor(&[0.0, 0.0], 5, 5), 1.0); // sigma_1 = 0
     }
 
     /// When the top singular value is at or below the noise threshold, return 1.0.
@@ -221,17 +254,17 @@ mod tests {
         let p = 12usize;
         let nc = 10usize;
         let mut mat = vec![vec![0.0f64; nc]; p];
-        for ph in 0..p {
-            for ci in 0..nc {
+        for (ph, row) in mat.iter_mut().enumerate() {
+            for (ci, v) in row.iter_mut().enumerate() {
                 let signal = (1.0 + 0.1 * ph as f64) * (10.0 + ci as f64);
-                let noise  = 0.3 * ((ph * nc + ci) as f64 * 1.7321 % 1.0 - 0.5);
-                mat[ph][ci] = signal + noise;
+                let noise = 0.3 * ((ph * nc + ci) as f64 * 1.7321 % 1.0 - 0.5);
+                *v = signal + noise;
             }
         }
 
         let dm = DMatrix::from_fn(p, nc, |r, c| mat[r][c]);
         let svd_na = dm.svd(false, false);
-        let s_na: Vec<f64> = svd_na.singular_values.iter().map(|&v| v as f64).collect();
+        let s_na: Vec<f64> = svd_na.singular_values.iter().copied().collect();
         let s_rs: Vec<f64> = crate::svd::svdvals(&mat);
 
         let rel0 = (s_na[0] - s_rs[0]).abs() / s_na[0];

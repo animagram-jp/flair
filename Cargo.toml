@@ -26,3 +26,23 @@ path = "src/lib.rs"
 
 [package.metadata.docs.rs]
 all-features = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+unused_must_use        = "deny"
+
+[lints.clippy]
+all                             = { level = "deny", priority = -1 }
+undocumented_unsafe_blocks      = "forbid"
+unnecessary_safety_comment      = "deny"
+unnecessary_safety_doc          = "deny"
+missing_safety_doc              = "deny"
+allow_attributes                = "deny"
+allow_attributes_without_reason = "deny"
+too_many_arguments              = "allow"
+type_complexity                 = "allow"
+excessive_precision             = "allow"
+new_without_default             = "allow"
+std_instead_of_core             = "deny"
+std_instead_of_alloc            = "deny"
+alloc_instead_of_core           = "deny"
