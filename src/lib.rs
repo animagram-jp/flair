@@ -1,6 +1,6 @@
 #![no_std]
-extern crate core;
 extern crate alloc;
+extern crate core;
 #[cfg(feature = "std")]
 extern crate std;
 
@@ -8,7 +8,6 @@ use core::{
     fmt::{self, Display},
     result::Result,
 };
-
 #[cfg(feature = "std")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,11 +17,7 @@ pub mod flair;
 pub mod optshrink;
 pub mod svd;
 
-pub use flair::{
-    forecast,
-    forecast_mean,
-    forecast_quantiles
-};
+pub use flair::{forecast, forecast_mean, forecast_quantiles};
 
 // ============================================================
 // NoiseMode
@@ -73,9 +68,9 @@ pub fn seed_from_time() -> u64 {
 
 #[derive(Debug)]
 pub enum Freq {
-    Secondly(usize),  // 10
-    Minutely(usize),  // 5, 10, 15, 30
-    Hourly(usize),    // 1, 2, 12
+    Secondly(usize), // 10
+    Minutely(usize), // 5, 10, 15, 30
+    Hourly(usize),   // 1, 2, 12
     Daily,
     Weekly,
     Monthly,

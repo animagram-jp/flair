@@ -1,0 +1,45 @@
+name: "Deploy"
+
+on:
+    push:
+        tags: ["*.*.*"]
+    workflow_dispatch:
+        inputs:
+            crates:
+                description: "publish to crates.io"
+                type: boolean
+                default: false
+
+permissions:
+    contents: read
+
+concurrency:
+    group: "deploy"
+    cancel-in-progress: false
+
+jobs:
+    deploy-crates:
+        if: github.event_name == 'push' || inputs.crates
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            id-token: write
+        environment:
+            name: "crates-io"
+        steps:
+            - name: "git checkout"
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: "verify tag matches Cargo.toml version"
+              run: |
+                  version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+                  test "$version" = "${GITHUB_REF_NAME}"
+
+            - name: "crates.io authentication"
+              id: "auth"
+              uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+
+            - name: "cargo publish"
+              run: cargo publish --all-features
+              env:
+                  CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
