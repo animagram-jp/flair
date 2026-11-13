@@ -15,8 +15,35 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    validate:
+    changes:
         if: github.ref_type != 'tag'
+        runs-on: ubuntu-latest
+        outputs:
+            code: ${{ steps.diff.outputs.code }}
+        steps:
+            - name: "git checkout"
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: "detect code changes"
+              id: "diff"
+              env:
+                  BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+                  HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+              run: |
+                  if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+                      echo "code=true" >> "$GITHUB_OUTPUT"
+                  elif git diff --name-only "$BASE...$HEAD" | grep -q -v -E '(\.md|^LICENSE|^NOTICE)$'; then
+                      echo "code=true" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "code=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+    validate:
+        needs: changes
+        if: needs.changes.outputs.code == 'true'
         runs-on: ubuntu-latest
         steps:
             - name: "git checkout"
