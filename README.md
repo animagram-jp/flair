@@ -5,6 +5,8 @@
 [![CI](https://github.com/animagram-jp/flair/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/animagram-jp/flair/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/animagram-jp/flair/graph/badge.svg)](https://codecov.io/gh/animagram-jp/flair)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/animagram-jp/flair/badge)](https://scorecard.dev/viewer/?uri=github.com/animagram-jp/flair)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16876/badge)](https://www.bestpractices.dev/projects/16876)
+[![OpenSSF Baseline](https://www.bestpractices.dev/projects/16876/baseline)](https://www.bestpractices.dev/projects/16876)
 
 Wasm-compilable implement of time series forecasting algorithm FLAIR.
 Provides self-estimated forecast confidence with an 800 KB binary.
