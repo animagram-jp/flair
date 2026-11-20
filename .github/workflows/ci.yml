@@ -95,3 +95,32 @@ jobs:
                   files: "lcov.info"
                   use_oidc: true
                   fail_ci_if_error: true
+
+    signoff:
+        if: github.event_name == 'pull_request'
+        runs-on: ubuntu-latest
+        steps:
+            - name: "git checkout"
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: "verify sign-off of every commit"
+              env:
+                  BASE: ${{ github.event.pull_request.base.sha }}
+                  HEAD: ${{ github.event.pull_request.head.sha }}
+                  OPENER: ${{ github.event.pull_request.user.login }}
+              run: |
+                  status=0
+                  for commit in $(git rev-list --no-merges "$BASE..$HEAD"); do
+                      email="$(git show -s --format=%ae "$commit")"
+                      if [ "$OPENER" = "dependabot[bot]" ] && [ "$email" = "49699333+dependabot[bot]@users.noreply.github.com" ]; then
+                          continue
+                      fi
+                      if ! git show -s --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" | grep -q -i -F "<$email>"; then
+                          echo "::error::commit $commit has no Signed-off-by trailer of its author <$email>"
+                          status=1
+                      fi
+                  done
+                  exit "$status"
