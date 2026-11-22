@@ -1,0 +1,30 @@
+version = 1
+
+[[annotations]]
+path = "**"
+SPDX-FileCopyrightText = "2026 Andyou <andyou@animagram.jp>"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["examples/dataset/air_passengers.csv", "examples/dataset/nottem.csv"]
+precedence = "override"
+SPDX-FileCopyrightText = "The R Core Team"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
+[[annotations]]
+path = "examples/dataset/noaa_temp_*.csv"
+precedence = "override"
+SPDX-FileCopyrightText = "NOAA National Centers for Environmental Information"
+SPDX-License-Identifier = "LicenseRef-PublicDomain"
+
+[[annotations]]
+path = "examples/dataset/elec_per_capita.csv"
+precedence = "override"
+SPDX-FileCopyrightText = "The World Bank"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+path = "examples/dataset/sunspot_year.csv"
+precedence = "override"
+SPDX-FileCopyrightText = "WDC-SILSO, Royal Observatory of Belgium, Brussels"
+SPDX-License-Identifier = "CC-BY-NC-4.0"

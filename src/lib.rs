@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Andyou <andyou@animagram.jp>
+// SPDX-FileCopyrightText: 2026 Takato Honda
+// SPDX-License-Identifier: Apache-2.0
+//
+// Ported from FLAIR (flaircast) (Copyright 2026 Takato Honda, Apache-2.0).
+
 #![no_std]
 extern crate alloc;
 extern crate core;

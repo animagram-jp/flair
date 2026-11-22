@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Andyou <andyou@animagram.jp>
+// SPDX-FileCopyrightText: 2026 Takato Honda
+// SPDX-License-Identifier: Apache-2.0
+//
+// Ported from FLAIR (flaircast) (Copyright 2026 Takato Honda, Apache-2.0).
+
 //! FLAIR: Factored Level And Interleaved Ridge (arXiv:2605.07222) by Takato Honda
 
 use alloc::{collections::BTreeSet, vec, vec::Vec};
@@ -1383,10 +1389,10 @@ mod tests {
         assert!(s.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
     }
 
-    // #20 + #23: select_period returns svd_s/nc_svd; optshrink is applied to l;
+    // select_period returns svd_s/nc_svd; optshrink is applied to l;
     // l_raw (pre-shrinkage) is used for phase-noise residuals.
     // We verify that: (a) select_period returns a non-trivial svd_s for a periodic series,
-    // (b) forecast still produces finite output (regression guard for the l_raw change).
+    // (b) forecast still produces finite output.
     #[test]
     fn select_period_returns_svd_and_l_raw_used() {
         // Strong monthly signal → select_period should pick P=12, returning real svd_s.
@@ -1406,7 +1412,7 @@ mod tests {
         assert!(svd_s[0] > svd_s[1], "svd_s should be descending");
         assert!(nc_svd >= 3, "nc_svd should be >= MIN_COMPLETE");
 
-        // End-to-end: output must be finite with the new l_raw/optshrink path.
+        // End-to-end: output must be finite.
         let (samples, conf) = forecast(&y, &freq, 12, 50, 0, None, NoiseMode::Bootstrap).unwrap();
         assert!(samples.iter().flat_map(|p| p.iter()).all(|v| v.is_finite()));
         assert!(conf.rank1.is_some());
@@ -1895,7 +1901,7 @@ mod tests {
         }
     }
 
-    // #20 + #23: Direct verification of the One-SVD principle.
+    // Direct verification of the One-SVD principle.
     // Cross-check svd_s returned by select_period against svdvals recomputed on the same matrix,
     // confirming they come from a single SVD (no redundant recomputation).
     // Also verifies that optshrink_factor is in (0, 1].

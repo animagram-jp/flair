@@ -1,8 +1,14 @@
+// SPDX-FileCopyrightText: 2026 Andyou <andyou@animagram.jp>
+// SPDX-FileCopyrightText: John D. Cook
+// SPDX-FileCopyrightText: Jacob Finkelman
+// SPDX-License-Identifier: BSD-2-Clause AND Apache-2.0
+//
 // BSD 2-Clause License
 //
 // This is a partial clone of the [quadrature](https://crates.io/crates/quadrature)
 // This is a port of the [Fast Numerical Integration](https://www.codeproject.com/kb/recipes/fastnumericalintegration.aspx) from c++ to rust.
 // The original code is by John D. Cook, and is licensed under the [BSD](https://opensource.org/licenses/bsd-license.php).
+// Modified for no_std.
 //
 // Copyright (c) John D. Cook
 // Copyright (c) Jacob Finkelman
