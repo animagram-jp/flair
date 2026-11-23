@@ -1,7 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Andyou <andyou@animagram.jp>
+// SPDX-FileCopyrightText: 2020 Sébastien Crozet
 // SPDX-License-Identifier: Apache-2.0
 //
 // Derived from nalgebra v0.35.0 (Copyright 2020 Sébastien Crozet, Apache-2.0).
-// Ported to Vec<f64>-based standalone implementation. See NOTICE for details.
+// Ported to Vec<f64>-based standalone implementation.
 
 //! Thin SVD — nalgebra-0.35.0 algorithm ported to `Vec<f64>`.
 //!

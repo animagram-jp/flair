@@ -1,3 +1,10 @@
+// SPDX-FileCopyrightText: 2026 Andyou <andyou@animagram.jp>
+// SPDX-FileCopyrightText: 2026 Takato Honda
+// SPDX-License-Identifier: Apache-2.0
+//
+// Ported from FLAIR (flaircast) (Copyright 2026 Takato Honda, Apache-2.0).
+// Source: flaircast/_level.py
+
 //! Gavish-Donoho 2014 optimal Frobenius shrinkage for rank-1 Level.
 //!
 //! Reference: Gavish & Donoho (2014) "The Optimal Hard Threshold for Singular

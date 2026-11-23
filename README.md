@@ -1,5 +1,3 @@
-# flair
-
 [![Crates.io](https://img.shields.io/crates/v/flair-rs.svg)](https://crates.io/crates/flair-rs)
 [![docs.rs](https://img.shields.io/docsrs/flair-rs)](https://docs.rs/flair-rs)
 [![CI](https://github.com/animagram-jp/flair/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/animagram-jp/flair/actions/workflows/ci.yml)
@@ -11,7 +9,7 @@
 Wasm-compilable implement of time series forecasting algorithm FLAIR.
 Provides self-estimated forecast confidence with an 800 KB binary.
 
-## Version
+# Version
 
 | Version | Status    | Date      | Description   |
 |---------|-----------|-----------|---------------|
@@ -21,30 +19,14 @@ Provides self-estimated forecast confidence with an 800 KB binary.
 
 This project adheres to [Semantic Versioning](https://semver.org/).
 
-## Reference
+# References
 
 - [*Mellon-Inc/FLAIR 0.6.1](https://github.com/Mellon-Inc/FLAIR)
 - [FLAIR Algorithm Paperar: Xiv:2605.07222](https://arxiv.org/abs/2605.07222)
 - [nalgebra 0.35.0](https://github.com/dimforge/nalgebra)
 - [quadrature 0.1.2](https://github.com/Eh2406/quadrature)
 
-## Dependency
-
-- [libm](https://crates.io/crates/libm)
-- [test only: nalgebra](https://crates.io/crates/nalgebra)
-
-## License
-
-```
-Apache-2.0
-Original: "FLAIR: Factored Level And Interleaved Ridge - single-equation time series forecasting"
-    https://github.com/Mellon-Inc/FLAIR
-    Copyright (c) Takato Honda
-Changes: Reimplemented in Rust; linear algebra from scratch; adapted for WASM deployment
-Author: Andyou <andyou@animagram.jp>
-```
-
-## Test
+# Test
 
 ```sh
 # unit tests
@@ -57,11 +39,9 @@ cargo run --example integration_tests --release
 cargo run --example forecast_validation --release
 ```
 
----
-
 [English](#reference) | [日本語](#ja)
 
-## Quick use
+# Quick use
 
 ```rust
 use flair::{forecast_mean, Freq, NoiseMode};
@@ -84,7 +64,7 @@ let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 200, 42, None, Noise
 // bands[2]: 90th percentile (optimistic)
 ```
 
-## Provided Functions
+# Provided Functions
 
 **Common arguments**
 
@@ -103,7 +83,7 @@ let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 200, 42, None, Noise
 | `forecast_quantiles` | `(y, freq, horizon, n_samples, seed, covariates, noise_mode, quantiles: &[f64])` | `Result<(Vec<Vec<f64>>, Confidence)>` `[quantile][horizon]` | Aggregates sample paths into quantiles. Pass e.g. `&[0.1, 0.5, 0.9]` to get pessimistic / median / optimistic forecast bands. |
 | `seed_from_time` *(std only)* | `()` | `u64` | Returns a non-deterministic seed from the system clock. |
 
-### Freq
+## Freq
 
 ```rust
 Freq::Secondly(10)
@@ -118,7 +98,7 @@ Freq::Yearly
 
 Variants with an interval argument are constructed via fallible constructors (`Freq::hourly(n) -> Result<Freq, Error>`) that reject invalid values.
 
-### NoiseMode
+## NoiseMode
 
 Controls how stochastic Level paths are sampled. Pass `NoiseMode::default()` for the default.
 
@@ -135,16 +115,16 @@ NoiseMode::StudentT           // parametric Student-t
 NoiseMode::default()          // same as Bootstrap
 ```
 
-### Confidence
+## Confidence
 
 | field | type | description |
 |-------|------|-------------|
 | `rank1` | `Option<f64>` | `s[0]²/Σs²` of seasonal matrix. 1.0 = pure rank-1 seasonality. `None` when period=1 (e.g. Yearly) or series too short. |
 | `gcv` | `Option<f64>` | Ridge LOO error on Level series. Lower = Level more predictable. Scale depends on Box-Cox transform. |
 
-## Dataset Test
+# Dataset Test
 
-### Result
+## Result
 
 80/20 train-test split. MASE < 1.0 means better than naive 1-step forecast.
 Run: `cargo run --example forecast_validation --release`
@@ -164,7 +144,7 @@ Run: `cargo run --example forecast_validation --release`
 
 rank1: `n/a` = annual series (period=1, no intra-period structure).
 
-### Reference
+## Reference
 
 | file | variable | freq | range | obs | source |
 |------|----------|------|-------|-----|--------|
@@ -178,7 +158,7 @@ rank1: `n/a` = annual series (period=1, no intra-period structure).
 
 ⚠️ `japan_demand_tokyo.csv` is not included in this repository. To use it, download the demand CSV from [japanesepower.org](https://japanesepower.org/), extract the Tokyo column, and place it at `examples/dataset/japan_demand_tokyo.csv`.
 
-## Build size
+# Build size
 
 Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 
@@ -187,7 +167,7 @@ Measured on release build (`cargo build --release`), WSL2 / Linux x86-64.
 | x86-64 | 783 KB |
 | wasm32 | 513 KB |
 
-## Python vs Rust comparison
+# Python vs Rust comparison
 
 To compare forecast output between flaircast (Python) and this crate (Rust),
 run the same series with the same arguments in both and compare the mean forecast.
@@ -217,9 +197,9 @@ flaircast 0.6.1 reference values recorded in the test.
 
 ---
 
-## Ja
+# Ja
 
-### クイックスタート
+## クイックスタート
 
 ```rust
 use flair::{forecast_mean, Freq, NoiseMode};
@@ -242,7 +222,7 @@ let (bands, _) = forecast_quantiles(&y, &Freq::Monthly, 12, 200, 42, None, Noise
 // bands[2]: 90パーセンタイル（楽観）
 ```
 
-### 提供関数
+## 提供関数
 
 **共通引数**
 
@@ -300,9 +280,9 @@ NoiseMode::default()          // Bootstrap と同じ
 | `rank1` | `Option<f64>` | 季節行列の `s[0]²/Σs²`。1.0 = 完全な単一周期性。`None` は period=1（Yearly 等）または系列が短い場合（エラーではない）。 |
 | `gcv` | `Option<f64>` | RidgeのLOOCV最小誤差。低いほどLevelが予測しやすい。スケールはBox-Cox変換依存。 |
 
-### データセットテスト
+## データセットテスト
 
-#### 結果
+### 結果
 
 80/20 トレイン・テスト分割。MASE < 1.0 はナイーブ1ステップ予測より優れていることを意味する。
 実行: `cargo run --example forecast_validation --release`
@@ -322,7 +302,7 @@ NoiseMode::default()          // Bootstrap と同じ
 
 rank1: `n/a` = 年次系列（period=1、周期内構造なし）。
 
-#### データセット出典
+### データセット出典
 
 | ファイル | 変数 | 頻度 | 期間 | 観測数 | 出典 |
 |---------|------|------|------|--------|------|
@@ -336,7 +316,7 @@ rank1: `n/a` = 年次系列（period=1、周期内構造なし）。
 
 ⚠️ `japan_demand_tokyo.csv` はリポジトリに含まれていない。使用する場合は [japanesepower.org](https://japanesepower.org/) から需要CSVをダウンロードし、東京列を抽出して `examples/dataset/japan_demand_tokyo.csv` に配置する。
 
-### ビルドサイズ
+## ビルドサイズ
 
 リリースビルド（`cargo build --release`）での測定値。WSL2 / Linux x86-64。
 

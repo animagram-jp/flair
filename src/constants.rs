@@ -1,8 +1,9 @@
+// SPDX-FileCopyrightText: 2026 Andyou <andyou@animagram.jp>
+// SPDX-FileCopyrightText: 2026 Takato Honda
 // SPDX-License-Identifier: Apache-2.0
 //
 // Ported from FLAIR (flaircast) (Copyright 2026 Takato Honda, Apache-2.0).
 // Source: flaircast/_constants.py
-// See the bundled NOTICE for details.
 
 /// General-purpose division guard.
 pub const EPS: f64 = 1e-10;

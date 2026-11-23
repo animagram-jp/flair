@@ -35,7 +35,7 @@ jobs:
               run: |
                   if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
                       echo "code=true" >> "$GITHUB_OUTPUT"
-                  elif git diff --name-only "$BASE...$HEAD" | grep -q -v -E '(\.md|^LICENSE|^NOTICE)$'; then
+                  elif git diff --name-only "$BASE...$HEAD" | grep -q -v -E '(\.md|^LICENSE)$'; then
                       echo "code=true" >> "$GITHUB_OUTPUT"
                   else
                       echo "code=false" >> "$GITHUB_OUTPUT"
@@ -62,6 +62,18 @@ jobs:
               run: cargo doc --all-features --no-deps
               env:
                   RUSTDOCFLAGS: "-D warnings"
+
+    reuse:
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-latest
+        steps:
+            - name: "git checkout"
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  persist-credentials: false
+
+            - name: "reuse lint"
+              uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
 
     test:
         if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
